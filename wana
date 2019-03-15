@@ -2,12 +2,19 @@
 # TODO: sh
 
 export POSIXLY_CORRECT=yes
-# if [ "$SHELL" = "/bin/bash" ]; then # FIXME: set posix on bash
-#     set -o posix
-# fi
-# echo "$SHELL"
+set +o | grep "posix" | {
+    while read set_cmd; do
+        eval set -o "$( echo "$set_cmd" | cut -s -d ' ' -f 3 )" "2>/dev/null"
+    done
+}
 
-#set -e
+abort()
+{
+    exit 1 # make sure we exit with exit code on abort
+}
+trap 'abort' 0
+
+set -e
 #set -x
 
 EOL="$( printf '\n ' )" && EOL="${EOL% }"
@@ -15,16 +22,11 @@ SCRIPT_NAME=`basename "$0"`
 EXIT_CODE_UNKNOWN_COMMAND=1
 EXIT_CODE_INVALID_LOG_FILE=2
 
-trap "exit $ERR_EXIT_CODE" TERM
-export SCRIPT_PID=$$
-ERR_EXIT_CODE="0"
-
 error_exit() {
-    ERR_EXIT_CODE="$1"
+    exit_code="$1"
     shift
     echo "$SCRIPT_NAME:" "$@" 1>&2
-    kill -s TERM $SCRIPT_PID
-    exit "$ERR_EXIT_CODE"
+    exit "$exit_code"
 }
 
 error_warn() {
@@ -47,23 +49,31 @@ while [ $# -gt 0 ]; do
         case "$1" in
             -a) # DATETIME – after = jsou uvažovány pouze záznamy PO tomto datu (bez tohoto data). DATETIME je formátu YYYY-MM-DD HH:MM:SS
                 F_AFTER="$2"
-                shift # arg
-                shift # val
+                if [ -z "$F_AFTER" ]; then
+                    error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Invalid date (for -a): Empty argument"
+                fi
+                shift 2 # arg + val
             ;;
             -b) # DATETIME – before, jsou uvažovány pouze záznamy PŘED tímto datem (bez tohodo data)
                 F_BEFORE="$2"
-                shift # arg
-                shift # val
+                if [ -z "$F_BEFORE" ]; then
+                    error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Invalid date (for -b): Empty argument"
+                fi
+                shift 2 # arg + val
             ;;
             -ip) # IPADDR – jsou uvažovány pouze záznamy odpovídající požadavkům ze zdrojové adresy IPADDR. Formát IPADDR odpovídá IPv4 nebo IPv6.
                 F_IP="$2"
-                shift # arg
-                shift # val
+                if [ -z "$F_IP" ]; then
+                    error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Invalid ip (for -ip): Empty argument"
+                fi
+                shift 2 # arg + val
             ;;
             -uri) # URI – jsou uvažovány pouze záznamy týkající se dotazů na konkrétní webovou stránku. URI je základní regulární výraz.
                 F_URI="$2"
-                shift # arg
-                shift # val
+                if [ -z "$F_URI" ]; then
+                    error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Invalid uri (for -uri): Empty argument"
+                fi
+                shift 2 # arg + val
             ;;
             --) # end of arguments
                 ARG_END=y
@@ -89,7 +99,7 @@ for arg in $@; do # TODO: How can we distinguish between command and log file?!
     case "$arg" in
         *.log | *.gz)
             if [ ! -e "$arg" ]; then
-                error_exit "$EXIT_CODE_INVALID_LOG_FILE" "Invalid log file"
+                error_exit "$EXIT_CODE_INVALID_LOG_FILE" "Invalid log file: $arg"
             fi
             FILES="${FILES} $arg"
         ;;
@@ -105,25 +115,6 @@ for arg in $@; do # TODO: How can we distinguish between command and log file?!
         ;;
     esac
 done
-
-files_read() {
-    if [ -z "${FILES}" ]; then
-        cat # read from stdin
-    else
-        for file in ${FILES}; do
-            cat "$file" | {
-                case "$file" in
-                    *.gz)
-                        gzip -d
-                    ;;
-                    *)
-                        cat
-                    ;;
-                esac
-            }
-        done
-    fi
-}
 
 # Log line format:
 I_LOG_IP=1           # $1       =  1      -> IP
@@ -188,6 +179,171 @@ parse_log_line() {
     # fi
 }
 
+normalize_date() {
+    echo "$( echo "$1" | sed 's/[\/\\.: -]/_/g' )"
+}
+
+month_name_to_int() {
+    case "$1" in
+        Jan) echo "01" ;;
+        Feb) echo "02" ;;
+        Mar) echo "03" ;;
+        Apr) echo "04" ;;
+        May) echo "05" ;;
+        Jun) echo "06" ;;
+        Jul) echo "07" ;;
+        Aug) echo "08" ;;
+        Sep) echo "09" ;;
+        Oct) echo "10" ;;
+        Nov) echo "11" ;;
+        Dec) echo "12" ;;
+        *) echo "00" ;;
+    esac
+}
+
+normalize_log_date() {
+    date=`normalize_date "$1"`
+    month_name="$( echo "$date" | cut -s -d '_' -f 2 )"
+    printf "%s_%s_%s_%s" \
+    "$( echo "$date" | cut -s -d '_' -f 3 )" \
+    "$( month_name_to_int "$( echo "$date" | cut -s -d '_' -f 2 )" )" \
+    "$( echo "$date" | cut -s -d '_' -f 1 )" \
+    "$( echo "$date" | cut -s -d '_' -f 4-6 )"
+}
+
+beautify_hour_date() { # YYYY-MM-DD HH:00
+    printf "%s-%s-%s %s:%s" \
+    "$( echo "$1" | cut -s -d '_' -f 1 )" \
+    "$( echo "$1" | cut -s -d '_' -f 2 )" \
+    "$( echo "$1" | cut -s -d '_' -f 3 )" \
+    "$( echo "$1" | cut -s -d '_' -f 4 )" \
+    "00"
+}
+
+next_beautify_hour_date() {
+    date="$( echo "$1" | sed 's/[ :-]/_/g' )"
+    yy="$( echo "$date" | cut -s -d '_' -f 1 )"
+    mm="$( echo "$date" | cut -s -d '_' -f 2 )"
+    dd="$( echo "$date" | cut -s -d '_' -f 3 )"
+    hh="$( echo "$date" | cut -s -d '_' -f 4 )"
+    
+    hh=`expr $hh + 1`
+    if [ "$hh" -gt 23 ]; then
+        return
+    fi
+    
+    hh=$(printf "%02d" "$hh")
+    printf "%s-%s-%s %s:%s" "$yy" "$mm" "$dd" "$hh" "00"
+}
+
+add_missing_hour_times() {
+    while read current_date_time && [ -z "$current_date_time" ]; do :; done
+    echo "$current_date_time"
+    
+    while read date_time; do # add missing hours from input
+        while :; do
+            current_date_time=`next_beautify_hour_date "$current_date_time"`
+            if [ -z "$current_date_time" ]; then # can't predict next time
+                current_date_time="$date_time"
+                echo "$current_date_time"
+                break
+            fi
+            
+            echo "$current_date_time"
+            if [ ! "$current_date_time" \< "$date_time" ]; then
+                break
+            fi
+        done
+    done
+}
+
+map_get_val() {
+    echo `eval echo '$'$1`
+}
+
+map_set_val() {
+    eval "$1='$2'"
+}
+
+add_map_values_to_names() {
+    map_name="$1"
+    map_key_regex="$2"
+    
+    while read name_line; do # add value before every map name
+        if [ -z "$name_line" ]; then
+            continue
+        fi
+        
+        name_id="$( echo "$name_line" | sed "$map_key_regex" )"
+        name_val=`map_get_val "$map_name$name_id"`
+        if [ -z "$name_val" ]; then
+            name_val=0
+        fi
+        printf "%s %s\n" "$name_val" "$name_line"
+    done
+}
+
+draw_hist() {
+    max_name_len="$1"
+    total_max_value="$2"
+    
+    max_val_len="$( printf "%s" "$total_max_value" | wc -m )"
+    
+    # calculate graph width
+    width=$( tput cols 2> /dev/null )
+    if [ -z "$width" ]; then
+        graph_width=100
+    else
+        graph_width=`expr "$width" - "$max_name_len" - "$max_val_len" - 5`
+        if [ "$graph_width" -lt 100 ]; then
+            graph_width=100
+        fi
+    fi
+    
+    # draw histogram
+    while read val_name_line; do
+        if [ -z "$val_name_line" ]; then
+            continue
+        fi
+        
+        value="$( echo "$val_name_line" | cut -s -d ' ' -f 1 )"
+        name="$( echo "$val_name_line" | cut -s -d ' ' -f 2- )"
+        
+        printf "%${max_name_len}s (%${max_val_len}s): " "$name" "$value"
+        
+        i=0
+        len=`expr "$value" \* "$graph_width" / "$total_max_value" || true` # true => ignore exit code of expr
+        while [ "$i" -lt "$len" ]; do
+            printf "#"
+            i=`expr "$i" + 1`
+        done
+        while [ "$i" -lt "$graph_width" ]; do # fill remaining space with spaces (keep consistent line length)
+            printf " "
+            i=`expr "$i" + 1`
+        done
+        printf "\n"
+    done
+}
+
+files_read() {
+    if [ -z "${FILES}" ]; then
+        cat # read from stdin
+    else
+        for file in ${FILES}; do
+            cat "$file" | {
+                case "$file" in
+                    *.gz)
+                        gzip -d
+                    ;;
+                    *)
+                        cat
+                    ;;
+                esac
+            }
+        done
+    fi
+}
+
 files_filter() {
     while read line; do
         parsed_line=`parse_log_line "$line"`
@@ -197,14 +353,18 @@ files_filter() {
             dateTime="$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_DATE_TIME" )"
             if [ -z "$dateTime" ] || [ "$dateTime" = "-" ]; then
                 allow=n
+            else
+                dateTime=`normalize_log_date "$dateTime"`
             fi
             
-            if [ "$allow" = y ] && [ -n "$F_AFTER" ]; then # FIXME: Properly parse F_AFTER
+            if [ "$allow" = y ] && [ -n "$F_AFTER" ]; then
+                F_AFTER=`normalize_date "$F_AFTER"`
                 if [ "$dateTime" \< "$F_AFTER" ] || [ "$dateTime" = "$F_AFTER" ]; then
                     allow=n
                 fi
             fi
-            if [ "$allow" = y ] && [ -n "$F_BEFORE" ]; then # FIXME: Properly parse F_BEFORE
+            if [ "$allow" = y ] && [ -n "$F_BEFORE" ]; then
+                F_BEFORE=`normalize_date "$F_BEFORE"`
                 if [ "$dateTime" \> "$F_BEFORE" ] || [ "$dateTime" = "$F_BEFORE" ]; then
                     allow=n
                 fi
@@ -276,81 +436,70 @@ cmd_list_uri() {
 }
 
 cmd_hist_ip() {
-    # calculate graph width
-    width=$( tput cols 2> /dev/null )
-    if [ -z "$width" ]; then
-        graph_width=100
-    else
-        graph_width=`expr $width - 55`
-        if [ "$graph_width" -lt 100 ]; then
-            graph_width=100
-        fi
-    fi
-
-    # calculate usage for every ip
-    ip_list=""
-    while read line; do
+    max_name_len=5
+    total_max_value=0
+    map_name="ip_map_"
+    map_key_regex='s/[.:]/_/g'
+    map_names=""
+    while read line; do # calculate usage for every ip
         parsed_line=`parse_log_line "$line"`
-        ip="$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_IP" )"
-        ip_id="$( echo "$ip" | sed 's/[.:]/_/g' )"
+        name="$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_IP" )"
+        name_id="$( echo "$name" | sed "$map_key_regex" )"
         
-        ip_val=`eval echo '$'ip_arr_$ip_id`
-        if [ -z "$ip_val" ]; then
-            ip_val=0
-            ip_list="${ip_list} $ip"
+        name_len="$( printf "%s" "$name" | wc -m )"
+        if [ "$name_len" -gt "$max_name_len" ]; then
+            max_name_len="$name_len"
         fi
         
-        ip_val=`expr $ip_val + 1`
+        name_val=`map_get_val "$map_name$name_id"`
+        if [ -z "$name_val" ]; then
+            name_val=0
+            map_names="$map_names$name$EOL"
+        fi
         
-        eval "ip_arr_$ip_id='$ip_val'"
+        name_val=`expr "$name_val" + 1`
+        if [ "$name_val" -gt "$total_max_value" ]; then
+            total_max_value="$name_val"
+        fi
+        
+        map_set_val "$map_name$name_id" "$name_val"
     done
     
-    # draw histogram
-    total_max_value=0
-    while [ -n "$ip_list" ]; do
-        max_ip=""
-        max_value=0
-        for ip in ${ip_list}; do # find ip with highest usage 
-            ip_id="$( echo "$ip" | sed 's/[.:]/_/g' )"
-            ip_val=`eval echo '$'ip_arr_$ip_id`
-
-            if [ "$ip_val" -gt "$max_value" ]; then
-                max_ip="$ip"
-                max_value="$ip_val"
-            fi
-        done
-
-        if [ "$total_max_value" -eq 0 ]; then
-            total_max_value="$max_value"
-        fi
-
-        printf "%45s (%5s): " "$max_ip" "$max_value"
-        
-        i=0
-        len=`expr $max_value \* $graph_width / $total_max_value`
-        while [ "$i" -lt "$len" ]; do
-            printf "#"
-            i=`expr $i + 1`
-        done
-        while [ "$i" -lt "$graph_width" ]; do # fill remaining space with spaces (keep consistent line length)
-            printf " "
-            i=`expr $i + 1`
-        done
-        printf "\n"
-
-        ip_list_tmp=""
-        for ip in ${ip_list}; do # remove ip with highest usage
-            if [ "$ip" = "$max_ip" ]; then
-                continue
-            fi
-            ip_list_tmp="${ip_list_tmp} $ip"
-        done
-        ip_list=${ip_list_tmp}
-    done
+    echo "$map_names" | add_map_values_to_names "$map_name" "$map_key_regex" | sort -n -r | draw_hist "$max_name_len" "$total_max_value"
 }
 
 cmd_hist_load() {
-    : # TODO: implement
+    max_name_len=16 # YYYY-MM-DD HH:MM
+    total_max_value=0
+    map_name="time_map_"
+    map_key_regex='s/[ :-]/_/g'
+    map_names=""
+    while read line; do # calculate usage for every hour
+        parsed_line=`parse_log_line "$line"`
+        name="$( beautify_hour_date "$( normalize_log_date "$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_DATE_TIME" )" )" )"
+        name_id="$( echo "$name" | sed "$map_key_regex" )"
+        
+        name_len="$( printf "%s" "$name" | wc -m )"
+        if [ "$name_len" -gt "$max_name_len" ]; then
+            max_name_len="$name_len"
+        fi
+        
+        name_val=`map_get_val "$map_name$name_id"`
+        if [ -z "$name_val" ]; then
+            name_val=0
+            map_names="$map_names$name$EOL"
+        fi
+        
+        name_val=`expr "$name_val" + 1`
+        if [ "$name_val" -gt "$total_max_value" ]; then
+            total_max_value="$name_val"
+        fi
+        
+        map_set_val "$map_name$name_id" "$name_val"
+    done
+    
+    # | add_missing_hour_times # FIXME: should be added!?
+    echo "$map_names" | sort | add_map_values_to_names "$map_name" "$map_key_regex" | draw_hist "$max_name_len" "$total_max_value"
 }
 
 cmd_basic_print() {
@@ -382,3 +531,5 @@ files_read | files_filter | {
         ;;
     esac
 }
+
+trap : 0 # cancel exit trap -> exit with 0
