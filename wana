@@ -1,0 +1,384 @@
+#!/bin/dash
+# TODO: sh
+
+export POSIXLY_CORRECT=yes
+# if [ "$SHELL" = "/bin/bash" ]; then # FIXME: set posix on bash
+#     set -o posix
+# fi
+# echo "$SHELL"
+
+#set -e
+#set -x
+
+EOL="$( printf '\n ' )" && EOL="${EOL% }"
+SCRIPT_NAME=`basename "$0"`
+EXIT_CODE_UNKNOWN_COMMAND=1
+EXIT_CODE_INVALID_LOG_FILE=2
+
+trap "exit $ERR_EXIT_CODE" TERM
+export SCRIPT_PID=$$
+ERR_EXIT_CODE="0"
+
+error_exit() {
+    ERR_EXIT_CODE="$1"
+    shift
+    echo "$SCRIPT_NAME:" "$@" 1>&2
+    kill -s TERM $SCRIPT_PID
+    exit "$ERR_EXIT_CODE"
+}
+
+error_warn() {
+    echo "$SCRIPT_NAME:" "$@" 1>&2
+}
+
+F_AFTER=""
+F_BEFORE=""
+F_IP=""
+F_URI=""
+
+
+ARG_END=n
+OTHERS=""
+while [ $# -gt 0 ]; do
+    if [ "$ARG_END" = y ]; then
+        OTHERS="${OTHERS} $1"
+        shift # arg
+    else
+        case "$1" in
+            -a) # DATETIME – after = jsou uvažovány pouze záznamy PO tomto datu (bez tohoto data). DATETIME je formátu YYYY-MM-DD HH:MM:SS
+                F_AFTER="$2"
+                shift # arg
+                shift # val
+            ;;
+            -b) # DATETIME – before, jsou uvažovány pouze záznamy PŘED tímto datem (bez tohodo data)
+                F_BEFORE="$2"
+                shift # arg
+                shift # val
+            ;;
+            -ip) # IPADDR – jsou uvažovány pouze záznamy odpovídající požadavkům ze zdrojové adresy IPADDR. Formát IPADDR odpovídá IPv4 nebo IPv6.
+                F_IP="$2"
+                shift # arg
+                shift # val
+            ;;
+            -uri) # URI – jsou uvažovány pouze záznamy týkající se dotazů na konkrétní webovou stránku. URI je základní regulární výraz.
+                F_URI="$2"
+                shift # arg
+                shift # val
+            ;;
+            --) # end of arguments
+                ARG_END=y
+                shift # arg
+            ;;
+            *)
+                OTHERS="${OTHERS} $1"
+                shift # arg
+            ;;
+        esac
+    fi
+done
+set -- ${OTHERS}
+
+CMD=""
+FILES=""
+
+for arg in $@; do # TODO: How can we distinguish between command and log file?!
+    if [ -e "$arg" ]; then
+        FILES="${FILES} $arg"
+        continue
+    fi
+    case "$arg" in
+        *.log | *.gz)
+            if [ ! -e "$arg" ]; then
+                error_exit "$EXIT_CODE_INVALID_LOG_FILE" "Invalid log file"
+            fi
+            FILES="${FILES} $arg"
+        ;;
+        *)
+            if [ -z "$CMD" ]; then
+                if [ -z "$arg" ]; then
+                    error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Unknown command: Empty argument"
+                fi
+                CMD="$arg"
+            else
+                error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Failed to parse arguments: Only single command supported"
+            fi
+        ;;
+    esac
+done
+
+files_read() {
+    if [ -z "${FILES}" ]; then
+        cat # read from stdin
+    else
+        for file in ${FILES}; do
+            cat "$file" | {
+                case "$file" in
+                    *.gz)
+                        gzip -d
+                    ;;
+                    *)
+                        cat
+                    ;;
+                esac
+            }
+        done
+    fi
+}
+
+# Log line format:
+I_LOG_IP=1           # $1       =  1      -> IP
+I_LOG_IDENTITY=2     # $2       =  2      -> Identity
+I_LOG_USER_ID=3      # $3       =  3      -> User ID
+I_LOG_DATE_TIME=4    # $4       = [4]     -> Date and time
+I_LOG_HTTP_METHOD=5
+I_LOG_HTTP_URI=6
+I_LOG_HTTP_VERSION=7 # $5 $6 $7 = "5 6 7" -> Http method + uri + version
+I_LOG_HTTP_STATUS=8  # $8       =  8      -> Http status
+I_LOG_SENT_SIZE=9    # $9       =  9      -> Sent data size
+I_LOG_REFERER=10     # $10      = "10"    -> Referer?
+I_LOG_USER_AGENT=11  # $11      = "11"    -> User agent
+
+parse_log_line() {
+    # Regex in posix was unusable...
+    # So parsing will be done manually.
+    line="$1"
+    
+    echo "$( echo "$line" | cut -d ' ' -f 1 )" # ip
+    echo "$( echo "$line" | cut -d ' ' -f 2 )" # identity
+    echo "$( echo "$line" | cut -d ' ' -f 3 )" # userId
+    
+    line="$( echo "$line" | cut -d ' ' -f 4- | cut -d '[' -f 2- )"
+    
+    echo "$( echo "$line" | cut -d ']' -f 1 )" # dateTime
+    
+    line="$( echo "$line" | cut -d ']' -f 2- | cut -d ' ' -f 2- | cut -d '"' -f 2- )"
+    
+    httpInfo="$( echo "$line" | cut -d '"' -f 1 )"
+    if [ -z "$( echo "$httpInfo" | cut -s -d ' ' -f 1- )" ]; then
+        echo "-" # httpMethod
+        echo "-" # httpUri
+        echo "-" # httpVersion
+        # httpInfoGarbage="""
+    else
+        echo "$( echo "$httpInfo" | cut -d ' ' -f 1 )" # httpMethod
+        echo "$( echo "$httpInfo" | cut -d ' ' -f 2 )" # httpUri
+        echo "$( echo "$httpInfo" | cut -d ' ' -f 3 )" # httpVersion
+        # httpInfoGarbage="$( echo "$httpInfo" | cut -d ' ' -f 4- )" # httpInfoGarbage
+    fi
+    
+    # line="$( echo "$line" | cut -d '"' -f 2- | cut -d ' ' -f 2- )"
+    
+    # echo "$( echo "$line" | cut -d ' ' -f 1 )" # httpStatus
+    # echo "$( echo "$line" | cut -d ' ' -f 1 )" # sentDataSize
+    
+    # line="$( echo "$line" | cut -d ' ' -f 3- | cut -d '"' -f 2- )"
+    
+    # echo "$( echo "$line" | cut -d '"' -f 1 )" # referer
+    
+    # line="$( echo "$line" | cut -d '"' -f 2- | cut -d ' ' -f 2- | cut -d '"' -f 2- )"
+    
+    # echo "$( echo "$line" | cut -d '"' -f 1 )" # userAgent
+    
+    # line="$( echo "$line" | cut -d '"' -f 2- )"
+    
+    # echo "$line" # garbage
+    
+    # if [ -n "$line" ]; then
+    #     error_warn "Found malformed log line!"
+    # fi
+}
+
+files_filter() {
+    while read line; do
+        parsed_line=`parse_log_line "$line"`
+        
+        allow=y
+        if [ -n "$F_AFTER" ] || [ -n "$F_BEFORE" ]; then
+            dateTime="$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_DATE_TIME" )"
+            if [ -z "$dateTime" ] || [ "$dateTime" = "-" ]; then
+                allow=n
+            fi
+            
+            if [ "$allow" = y ] && [ -n "$F_AFTER" ]; then # FIXME: Properly parse F_AFTER
+                if [ "$dateTime" \< "$F_AFTER" ] || [ "$dateTime" = "$F_AFTER" ]; then
+                    allow=n
+                fi
+            fi
+            if [ "$allow" = y ] && [ -n "$F_BEFORE" ]; then # FIXME: Properly parse F_BEFORE
+                if [ "$dateTime" \> "$F_BEFORE" ] || [ "$dateTime" = "$F_BEFORE" ]; then
+                    allow=n
+                fi
+            fi
+        fi
+        
+        if [ "$allow" = y ] && [ -n "$F_IP" ]; then
+            ip="$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_IP" )"
+            if [ -z "$ip" ] || [ "$ip" = "-" ] || [ "$ip" != "$F_IP" ]; then
+                allow=n
+            fi
+        fi
+        
+        if [ "$allow" = y ] && [ -n "$F_URI" ]; then
+            uri="$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_HTTP_URI" )"
+            if [ -z "$uri" ] || [ "$uri" = "-" ] || [ "$uri" != "$F_URI" ]; then
+                allow=n
+            fi
+        fi
+        
+        if [ "$allow" = y ]; then
+            echo "$line"
+        fi
+    done
+}
+
+cmd_list_ip() { # FIXME: Should we print out duplicates?!
+    {
+        while read line; do
+            parsed_line=`parse_log_line "$line"`
+            echo "$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_IP" )"
+        done
+    } | sort | uniq
+}
+
+cmd_list_hosts() { # FIXME: Should we print out duplicates?!
+    cmd_list_ip | {
+        while read line; do
+            # try obtain hostname three times
+            host=`host "$line"`
+            if [ $? -ne 0 ]; then
+                host=`host "$line"`
+                if [ $? -ne 0 ]; then
+                    host=`host "$line"`
+                    if [ $? -ne 0 ]; then
+                        echo "$line"
+                        continue
+                    fi
+                fi
+            fi
+            host="$( echo "$host" | tail -n -1 | awk -F "domain name pointer " '{ print $2 }' )"
+            host="${host%.}" # remove tailing dot
+            echo "$host"
+        done
+    } | sort | uniq
+}
+
+cmd_list_uri() {
+    {
+        while read line; do
+            parsed_line=`parse_log_line "$line"`
+            uri="$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_HTTP_URI" )"
+            if [ -z "$uri" ] || [ "$uri" = "-" ]; then
+                continue
+            fi
+            echo "$uri"
+        done
+    } | sort | uniq
+}
+
+cmd_hist_ip() {
+    # calculate graph width
+    width=$( tput cols 2> /dev/null )
+    if [ -z "$width" ]; then
+        graph_width=100
+    else
+        graph_width=`expr $width - 55`
+        if [ "$graph_width" -lt 100 ]; then
+            graph_width=100
+        fi
+    fi
+
+    # calculate usage for every ip
+    ip_list=""
+    while read line; do
+        parsed_line=`parse_log_line "$line"`
+        ip="$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_IP" )"
+        ip_id="$( echo "$ip" | sed 's/[.:]/_/g' )"
+        
+        ip_val=`eval echo '$'ip_arr_$ip_id`
+        if [ -z "$ip_val" ]; then
+            ip_val=0
+            ip_list="${ip_list} $ip"
+        fi
+        
+        ip_val=`expr $ip_val + 1`
+        
+        eval "ip_arr_$ip_id='$ip_val'"
+    done
+    
+    # draw histogram
+    total_max_value=0
+    while [ -n "$ip_list" ]; do
+        max_ip=""
+        max_value=0
+        for ip in ${ip_list}; do # find ip with highest usage 
+            ip_id="$( echo "$ip" | sed 's/[.:]/_/g' )"
+            ip_val=`eval echo '$'ip_arr_$ip_id`
+
+            if [ "$ip_val" -gt "$max_value" ]; then
+                max_ip="$ip"
+                max_value="$ip_val"
+            fi
+        done
+
+        if [ "$total_max_value" -eq 0 ]; then
+            total_max_value="$max_value"
+        fi
+
+        printf "%45s (%5s): " "$max_ip" "$max_value"
+        
+        i=0
+        len=`expr $max_value \* $graph_width / $total_max_value`
+        while [ "$i" -lt "$len" ]; do
+            printf "#"
+            i=`expr $i + 1`
+        done
+        while [ "$i" -lt "$graph_width" ]; do # fill remaining space with spaces (keep consistent line length)
+            printf " "
+            i=`expr $i + 1`
+        done
+        printf "\n"
+
+        ip_list_tmp=""
+        for ip in ${ip_list}; do # remove ip with highest usage
+            if [ "$ip" = "$max_ip" ]; then
+                continue
+            fi
+            ip_list_tmp="${ip_list_tmp} $ip"
+        done
+        ip_list=${ip_list_tmp}
+    done
+}
+
+cmd_hist_load() {
+    : # TODO: implement
+}
+
+cmd_basic_print() {
+    cat # just print out input
+}
+
+files_read | files_filter | {
+    case "$CMD" in
+        list-ip) # výpis seznamu zdrojových IP adres
+            cmd_list_ip
+        ;;
+        list-hosts) # výpis seznamu zdrojových doménových jmen
+            cmd_list_hosts
+        ;;
+        list-uri) # výpis seznamu cílových zdrojů (URI)
+            cmd_list_uri
+        ;;
+        hist-ip) # výpis histogramu četností dotazů podle zdrojových IP adres
+            cmd_hist_ip
+        ;;
+        hist-load) # výpis histogramu zátěže (tj. počtu dotazů ve jednotlivých časových intervalech)
+            cmd_hist_load
+        ;;
+        "") # no command
+            cmd_basic_print
+        ;;
+        *) # unknown command
+            error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Unknown command: $CMD"
+        ;;
+    esac
+}
