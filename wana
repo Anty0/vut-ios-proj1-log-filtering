@@ -1,5 +1,4 @@
-#!/bin/dash
-# TODO: sh
+#!/bin/sh
 
 export POSIXLY_CORRECT=yes
 set +o | grep "posix" | {
@@ -257,6 +256,20 @@ add_missing_hour_times() {
     done
 }
 
+get_hostname() {
+    host=`host "$line"`
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    host="$( echo "$host" | tail -n -1 | awk -F "domain name pointer " '{ print $2 }' )"
+    host="${host%.}" # remove tailing dot
+    echo "$host"
+}
+
+try_get_hostname() {
+    get_hostname "$1" || get_hostname "$1" || get_hostname "$1" || echo "$1"
+}
+
 map_get_val() {
     echo `eval echo '$'$1`
 }
@@ -295,8 +308,8 @@ draw_hist() {
         graph_width=100
     else
         graph_width=`expr "$width" - "$max_name_len" - "$max_val_len" - 5`
-        if [ "$graph_width" -lt 100 ]; then
-            graph_width=100
+        if [ "$graph_width" -lt 15 ]; then
+            graph_width=15
         fi
     fi
     
@@ -350,7 +363,7 @@ files_filter() {
         
         allow=y
         if [ -n "$F_AFTER" ] || [ -n "$F_BEFORE" ]; then
-            dateTime="$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_DATE_TIME" )"
+            dateTime="$( echo "$parsed_line" | sed -n "${I_LOG_DATE_TIME}p" )"
             if [ -z "$dateTime" ] || [ "$dateTime" = "-" ]; then
                 allow=n
             else
@@ -372,14 +385,14 @@ files_filter() {
         fi
         
         if [ "$allow" = y ] && [ -n "$F_IP" ]; then
-            ip="$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_IP" )"
+            ip="$( echo "$parsed_line" | sed -n "${I_LOG_IP}p" )"
             if [ -z "$ip" ] || [ "$ip" = "-" ] || [ "$ip" != "$F_IP" ]; then
                 allow=n
             fi
         fi
         
         if [ "$allow" = y ] && [ -n "$F_URI" ]; then
-            uri="$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_HTTP_URI" )"
+            uri="$( echo "$parsed_line" | sed -n "${I_LOG_HTTP_URI}p" )"
             if [ -z "$uri" ] || [ "$uri" = "-" ] || [ "$uri" != "$F_URI" ]; then
                 allow=n
             fi
@@ -395,44 +408,30 @@ cmd_list_ip() { # FIXME: Should we print out duplicates?!
     {
         while read line; do
             parsed_line=`parse_log_line "$line"`
-            echo "$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_IP" )"
+            echo "$( echo "$parsed_line" | sed -n "${I_LOG_IP}p" )"
         done
-    } | sort | uniq
+    } | sort -u
 }
 
 cmd_list_hosts() { # FIXME: Should we print out duplicates?!
     cmd_list_ip | {
         while read line; do
-            # try obtain hostname three times
-            host=`host "$line"`
-            if [ $? -ne 0 ]; then
-                host=`host "$line"`
-                if [ $? -ne 0 ]; then
-                    host=`host "$line"`
-                    if [ $? -ne 0 ]; then
-                        echo "$line"
-                        continue
-                    fi
-                fi
-            fi
-            host="$( echo "$host" | tail -n -1 | awk -F "domain name pointer " '{ print $2 }' )"
-            host="${host%.}" # remove tailing dot
-            echo "$host"
+            echo "$( try_get_hostname "$line" )"
         done
-    } | sort | uniq
+    } | sort -u
 }
 
 cmd_list_uri() {
     {
         while read line; do
             parsed_line=`parse_log_line "$line"`
-            uri="$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_HTTP_URI" )"
+            uri="$( echo "$parsed_line" | sed -n "${I_LOG_HTTP_URI}p" )"
             if [ -z "$uri" ] || [ "$uri" = "-" ]; then
                 continue
             fi
             echo "$uri"
         done
-    } | sort | uniq
+    } | sort -u
 }
 
 cmd_hist_ip() {
@@ -443,7 +442,7 @@ cmd_hist_ip() {
     map_names=""
     while read line; do # calculate usage for every ip
         parsed_line=`parse_log_line "$line"`
-        name="$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_IP" )"
+        name="$( echo "$parsed_line" | sed -n "${I_LOG_IP}p" )"
         name_id="$( echo "$name" | sed "$map_key_regex" )"
         
         name_len="$( printf "%s" "$name" | wc -m )"
@@ -476,7 +475,7 @@ cmd_hist_load() {
     map_names=""
     while read line; do # calculate usage for every hour
         parsed_line=`parse_log_line "$line"`
-        name="$( beautify_hour_date "$( normalize_log_date "$( echo "$parsed_line" | cut -d "$EOL" -f "$I_LOG_DATE_TIME" )" )" )"
+        name="$( beautify_hour_date "$( normalize_log_date "$( echo "$parsed_line" | sed -n "${I_LOG_DATE_TIME}p" )" )" )"
         name_id="$( echo "$name" | sed "$map_key_regex" )"
         
         name_len="$( printf "%s" "$name" | wc -m )"
