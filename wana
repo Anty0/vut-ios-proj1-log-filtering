@@ -158,10 +158,10 @@ parse_log_line() {
     printf "%s\\n" "${line%% *}" # identity
     line="${line#* }"
     printf "%s\\n" "${line%% *}" # userId
-    line="${line#* [}"
-    printf "%s\\n" "${line%%]*}" # dateTime
-    line="${line#*] '"'}"
-    httpInfo="${line%%'"'*}"
+    line="${line#* \[}"
+    printf "%s\\n" "${line%%\]*}" # dateTime
+    line="${line#*\] \"}"
+    httpInfo="${line%%\"*}"
     if [ "${httpInfo%% *}" = "$httpInfo" ]; then
         printf "%s\\n" "-" # httpMethod
         printf "%s\\n" "-" # httpUri
@@ -176,16 +176,16 @@ parse_log_line() {
         # httpInfoGarbage="$( printf "%s" "$httpInfo" | cut -s -d ' ' -f 2- )" # httpInfoGarbage
     fi
     
-    # line="${line#*'"' }"
+    # line="${line#*\" }"
     # printf "%s\\n" "${line%% *}" # httpStatus
     # line="${line#* }"
     # printf "%s\\n" "${line%% *}" # sentDataSize
-    # line="${line#* '"'}"
-    # printf "%s\\n" "${line%%'"'*}" # referer
-    # line="${line#*'"' '"'}"
-    # printf "%s\\n" "${line%%'"'*}" # userAgent
+    # line="${line#* \"}"
+    # printf "%s\\n" "${line%%\"*}" # referer
+    # line="${line#*\" \"}"
+    # printf "%s\\n" "${line%%\"*}" # userAgent
     
-    # line="$( printf "%s" "$line" | cut -s -d '"' -f 2- )"
+    # line="$( printf "%s" "$line" | cut -s -d \" -f 2- )"
     
     # printf "%s" "$line" # garbage
     
@@ -225,7 +225,13 @@ normalize_log_date() {
     date="${date#*_}"
     yyyy="${date%%_*}"
     date="${date#*_}"
-    printf "%s_%s_%s_%s" "$yyyy" "$mm" "$dd" "$date"
+    hh="${date%%_*}"
+    date="${date#*_}"
+    mn="${date%%_*}"
+    date="${date#*_}"
+    ss="${date%%_*}"
+    
+    printf "%s_%s_%s_%s_%s_%s" "$yyyy" "$mm" "$dd" "$hh" "$mn" "$ss"
 }
 
 beautify_hour_date() { # YYYY-MM-DD HH:00
@@ -388,27 +394,28 @@ files_read() {
 }
 
 files_filter() {
+    if [ -n "$F_AFTER" ]; then
+        F_NORM_AFTER="$( normalize_date "$F_AFTER" )"
+    fi
+    if [ -n "$F_BEFORE" ]; then
+        F_NORM_BEFORE="$( normalize_date "$F_BEFORE" )"
+    fi
+    
     while read -r line; do
         parsed_line="$( parse_log_line "$line" )"
         
-        if [ -n "$F_AFTER" ] || [ -n "$F_BEFORE" ]; then
+        if [ -n "$F_NORM_AFTER" ] || [ -n "$F_NORM_BEFORE" ]; then
             dateTime="$( printf "%s" "$parsed_line" | sed -n "${I_LOG_DATE_TIME}p" )"
             if [ -z "$dateTime" ] || [ "$dateTime" = "-" ]; then
                 continue
             fi
             dateTime="$( normalize_log_date "$dateTime" )"
             
-            if [ -n "$F_AFTER" ]; then
-                F_AFTER="$( normalize_date "$F_AFTER" )"
-                if [ "$( compare_strings "$dateTime" "$F_AFTER" )" -gt -1 ]; then
-                    continue
-                fi
+            if [ -n "$F_NORM_AFTER" ] && [ "$( compare_strings "$dateTime" "$F_NORM_AFTER" )" -gt -1 ]; then
+                continue
             fi
-            if [ -n "$F_BEFORE" ]; then
-                F_BEFORE="$( normalize_date "$F_BEFORE" )"
-                if [ "$( compare_strings "$dateTime" "$F_BEFORE" )" -lt 1 ]; then
-                    continue
-                fi
+            if [ -n "$F_NORM_BEFORE" ] && [ "$( compare_strings "$dateTime" "$F_NORM_BEFORE" )" -lt 1 ]; then
+                continue
             fi
         fi
         
