@@ -2,8 +2,8 @@
 
 export POSIXLY_CORRECT=yes
 set +o | grep "posix" | {
-    while read set_cmd; do
-        eval set -o "$( echo "$set_cmd" | cut -s -d ' ' -f 3 )" "2>/dev/null"
+    while read -r set_cmd; do
+        set -o "${set_cmd##* }" 2>/dev/null
     done
 }
 
@@ -16,20 +16,40 @@ trap 'abort' 0
 set -e
 #set -x
 
-EOL="$( printf '\n ' )" && EOL="${EOL% }"
-SCRIPT_NAME=`basename "$0"`
+EOL="$( printf '\\n ' )" && EOL="${EOL% }"
+SCRIPT_NAME="$( basename "$0"; echo n )" && SCRIPT_NAME=${SCRIPT_NAME%??}
 EXIT_CODE_UNKNOWN_COMMAND=1
 EXIT_CODE_INVALID_LOG_FILE=2
 
 error_exit() {
     exit_code="$1"
     shift
-    echo "$SCRIPT_NAME:" "$@" 1>&2
+    printf "%s %s\\n" "$SCRIPT_NAME:" "$@" 1>&2
     exit "$exit_code"
 }
 
 error_warn() {
-    echo "$SCRIPT_NAME:" "$@" 1>&2
+    printf "%s %s\\n" "$SCRIPT_NAME:" "$@" 1>&2
+}
+
+str_quote() {
+    printf %s\\n "$1" | sed -e "s/'/'\\\\''/g" -e "1s/^/'/" -e "\$s/\$/'/"
+}
+
+args_to_lines() {
+    for arg in "$@"; do
+        printf "%s\\n" "$arg"
+    done
+}
+
+compare_strings() {
+    if [ "$1" = "$2" ]; then
+        printf "%d" "0"
+        elif [ "$( printf "%s\\n%s" "$1" "$2" | sort | sed -n "1p" )" = "$1" ]; then
+        printf "%d" "1"
+    else
+        printf "%d" "-1"
+    fi
 }
 
 F_AFTER=""
@@ -40,9 +60,9 @@ F_URI=""
 
 ARG_END=n
 OTHERS=""
-while [ $# -gt 0 ]; do
+while [ "$#" -gt 0 ]; do
     if [ "$ARG_END" = y ]; then
-        OTHERS="${OTHERS} $1"
+        OTHERS="${OTHERS} $( str_quote "$1" )"
         shift # arg
     else
         case "$1" in
@@ -79,20 +99,20 @@ while [ $# -gt 0 ]; do
                 shift # arg
             ;;
             *)
-                OTHERS="${OTHERS} $1"
+                OTHERS="${OTHERS} $( str_quote "$1" )"
                 shift # arg
             ;;
         esac
     fi
 done
-set -- ${OTHERS}
+eval "set -- ${OTHERS}"
 
 CMD=""
 FILES=""
 
-for arg in $@; do # TODO: How can we distinguish between command and log file?!
+for arg in "$@"; do # TODO: How can we distinguish between command and log file?!
     if [ -e "$arg" ]; then
-        FILES="${FILES} $arg"
+        FILES="${FILES} $( str_quote "$arg" )"
         continue
     fi
     case "$arg" in
@@ -100,7 +120,7 @@ for arg in $@; do # TODO: How can we distinguish between command and log file?!
             if [ ! -e "$arg" ]; then
                 error_exit "$EXIT_CODE_INVALID_LOG_FILE" "Invalid log file: $arg"
             fi
-            FILES="${FILES} $arg"
+            FILES="${FILES} $( str_quote "$arg" )"
         ;;
         *)
             if [ -z "$CMD" ]; then
@@ -123,55 +143,51 @@ I_LOG_DATE_TIME=4    # $4       = [4]     -> Date and time
 I_LOG_HTTP_METHOD=5
 I_LOG_HTTP_URI=6
 I_LOG_HTTP_VERSION=7 # $5 $6 $7 = "5 6 7" -> Http method + uri + version
-I_LOG_HTTP_STATUS=8  # $8       =  8      -> Http status
-I_LOG_SENT_SIZE=9    # $9       =  9      -> Sent data size
-I_LOG_REFERER=10     # $10      = "10"    -> Referer?
-I_LOG_USER_AGENT=11  # $11      = "11"    -> User agent
+# I_LOG_HTTP_STATUS=8  # $8       =  8      -> Http status
+# I_LOG_SENT_SIZE=9    # $9       =  9      -> Sent data size
+# I_LOG_REFERER=10     # $10      = "10"    -> Referer?
+# I_LOG_USER_AGENT=11  # $11      = "11"    -> User agent
 
 parse_log_line() {
     # Regex in posix was unusable...
     # So parsing will be done manually.
     line="$1"
     
-    echo "$( echo "$line" | cut -d ' ' -f 1 )" # ip
-    echo "$( echo "$line" | cut -d ' ' -f 2 )" # identity
-    echo "$( echo "$line" | cut -d ' ' -f 3 )" # userId
-    
-    line="$( echo "$line" | cut -d ' ' -f 4- | cut -d '[' -f 2- )"
-    
-    echo "$( echo "$line" | cut -d ']' -f 1 )" # dateTime
-    
-    line="$( echo "$line" | cut -d ']' -f 2- | cut -d ' ' -f 2- | cut -d '"' -f 2- )"
-    
-    httpInfo="$( echo "$line" | cut -d '"' -f 1 )"
-    if [ -z "$( echo "$httpInfo" | cut -s -d ' ' -f 1- )" ]; then
-        echo "-" # httpMethod
-        echo "-" # httpUri
-        echo "-" # httpVersion
+    printf "%s\\n" "${line%% *}" # ip
+    line="${line#* }"
+    printf "%s\\n" "${line%% *}" # identity
+    line="${line#* }"
+    printf "%s\\n" "${line%% *}" # userId
+    line="${line#* [}"
+    printf "%s\\n" "${line%%]*}" # dateTime
+    line="${line#*] '"'}"
+    httpInfo="${line%%'"'*}"
+    if [ "${httpInfo%% *}" = "$httpInfo" ]; then
+        printf "%s\\n" "-" # httpMethod
+        printf "%s\\n" "-" # httpUri
+        printf "%s\\n" "-" # httpVersion
         # httpInfoGarbage="""
     else
-        echo "$( echo "$httpInfo" | cut -d ' ' -f 1 )" # httpMethod
-        echo "$( echo "$httpInfo" | cut -d ' ' -f 2 )" # httpUri
-        echo "$( echo "$httpInfo" | cut -d ' ' -f 3 )" # httpVersion
-        # httpInfoGarbage="$( echo "$httpInfo" | cut -d ' ' -f 4- )" # httpInfoGarbage
+        printf "%s\\n" "${httpInfo%% *}" # httpMethod
+        httpInfo="${httpInfo#* }"
+        printf "%s\\n" "${httpInfo%% *}" # httpUri
+        httpInfo="${httpInfo#* }"
+        printf "%s\\n" "${httpInfo%% *}" # httpVersion
+        # httpInfoGarbage="$( printf "%s" "$httpInfo" | cut -s -d ' ' -f 2- )" # httpInfoGarbage
     fi
     
-    # line="$( echo "$line" | cut -d '"' -f 2- | cut -d ' ' -f 2- )"
+    # line="${line#*'"' }"
+    # printf "%s\\n" "${line%% *}" # httpStatus
+    # line="${line#* }"
+    # printf "%s\\n" "${line%% *}" # sentDataSize
+    # line="${line#* '"'}"
+    # printf "%s\\n" "${line%%'"'*}" # referer
+    # line="${line#*'"' '"'}"
+    # printf "%s\\n" "${line%%'"'*}" # userAgent
     
-    # echo "$( echo "$line" | cut -d ' ' -f 1 )" # httpStatus
-    # echo "$( echo "$line" | cut -d ' ' -f 1 )" # sentDataSize
+    # line="$( printf "%s" "$line" | cut -s -d '"' -f 2- )"
     
-    # line="$( echo "$line" | cut -d ' ' -f 3- | cut -d '"' -f 2- )"
-    
-    # echo "$( echo "$line" | cut -d '"' -f 1 )" # referer
-    
-    # line="$( echo "$line" | cut -d '"' -f 2- | cut -d ' ' -f 2- | cut -d '"' -f 2- )"
-    
-    # echo "$( echo "$line" | cut -d '"' -f 1 )" # userAgent
-    
-    # line="$( echo "$line" | cut -d '"' -f 2- )"
-    
-    # echo "$line" # garbage
+    # printf "%s" "$line" # garbage
     
     # if [ -n "$line" ]; then
     #     error_warn "Found malformed log line!"
@@ -179,77 +195,88 @@ parse_log_line() {
 }
 
 normalize_date() {
-    echo "$( echo "$1" | sed 's/[\/\\.: -]/_/g' )"
+    printf "%s" "$1" | sed 's/[\/\\.: -]/_/g'
 }
 
 month_name_to_int() {
     case "$1" in
-        Jan) echo "01" ;;
-        Feb) echo "02" ;;
-        Mar) echo "03" ;;
-        Apr) echo "04" ;;
-        May) echo "05" ;;
-        Jun) echo "06" ;;
-        Jul) echo "07" ;;
-        Aug) echo "08" ;;
-        Sep) echo "09" ;;
-        Oct) echo "10" ;;
-        Nov) echo "11" ;;
-        Dec) echo "12" ;;
-        *) echo "00" ;;
+        Jan) printf "01" ;;
+        Feb) printf "02" ;;
+        Mar) printf "03" ;;
+        Apr) printf "04" ;;
+        May) printf "05" ;;
+        Jun) printf "06" ;;
+        Jul) printf "07" ;;
+        Aug) printf "08" ;;
+        Sep) printf "09" ;;
+        Oct) printf "10" ;;
+        Nov) printf "11" ;;
+        Dec) printf "12" ;;
+        *) printf "00" ;;
     esac
 }
 
 normalize_log_date() {
-    date=`normalize_date "$1"`
-    month_name="$( echo "$date" | cut -s -d '_' -f 2 )"
-    printf "%s_%s_%s_%s" \
-    "$( echo "$date" | cut -s -d '_' -f 3 )" \
-    "$( month_name_to_int "$( echo "$date" | cut -s -d '_' -f 2 )" )" \
-    "$( echo "$date" | cut -s -d '_' -f 1 )" \
-    "$( echo "$date" | cut -s -d '_' -f 4-6 )"
+    date="$( normalize_date "$1" )"
+    
+    dd="${date%%_*}"
+    date="${date#*_}"
+    mm="$( month_name_to_int "${date%%_*}" )"
+    date="${date#*_}"
+    yyyy="${date%%_*}"
+    date="${date#*_}"
+    printf "%s_%s_%s_%s" "$yyyy" "$mm" "$dd" "$date"
 }
 
 beautify_hour_date() { # YYYY-MM-DD HH:00
-    printf "%s-%s-%s %s:%s" \
-    "$( echo "$1" | cut -s -d '_' -f 1 )" \
-    "$( echo "$1" | cut -s -d '_' -f 2 )" \
-    "$( echo "$1" | cut -s -d '_' -f 3 )" \
-    "$( echo "$1" | cut -s -d '_' -f 4 )" \
-    "00"
+    date="$1"
+    
+    yyyy="${date%%_*}"
+    date="${date#*_}"
+    mm="${date%%_*}"
+    date="${date#*_}"
+    dd="${date%%_*}"
+    date="${date#*_}"
+    hh="${date%%_*}"
+    
+    printf "%s-%s-%s %s:%s" "$yyyy" "$mm" "$dd" "$hh" "00"
 }
 
 next_beautify_hour_date() {
-    date="$( echo "$1" | sed 's/[ :-]/_/g' )"
-    yy="$( echo "$date" | cut -s -d '_' -f 1 )"
-    mm="$( echo "$date" | cut -s -d '_' -f 2 )"
-    dd="$( echo "$date" | cut -s -d '_' -f 3 )"
-    hh="$( echo "$date" | cut -s -d '_' -f 4 )"
+    date="$( printf "%s" "$1" | sed 's/[ :-]/_/g' )"
     
-    hh=`expr $hh + 1`
+    yyyy="${date%%_*}"
+    date="${date#*_}"
+    mm="${date%%_*}"
+    date="${date#*_}"
+    dd="${date%%_*}"
+    date="${date#*_}"
+    hh="${date%%_*}"
+    
+    hh=$(( hh + 1 ))
     if [ "$hh" -gt 23 ]; then
         return
     fi
     
-    hh=$(printf "%02d" "$hh")
-    printf "%s-%s-%s %s:%s" "$yy" "$mm" "$dd" "$hh" "00"
+    hh=$( printf "%02d" "$hh" )
+    printf "%s-%s-%s %s:%s" "$yyyy" "$mm" "$dd" "$hh" "00"
 }
 
 add_missing_hour_times() {
-    while read current_date_time && [ -z "$current_date_time" ]; do :; done
-    echo "$current_date_time"
+    while read -r current_date_time && [ -z "$current_date_time" ]; do :; done
+    printf "%s\\n" "$current_date_time"
     
-    while read date_time; do # add missing hours from input
+    while read -r date_time; do # add missing hours from input
         while :; do
-            current_date_time=`next_beautify_hour_date "$current_date_time"`
+            current_date_time=$( next_beautify_hour_date "$current_date_time" )
             if [ -z "$current_date_time" ]; then # can't predict next time
                 current_date_time="$date_time"
-                echo "$current_date_time"
+                printf "%s\\n" "$current_date_time"
                 break
             fi
             
-            echo "$current_date_time"
-            if [ ! "$current_date_time" \< "$date_time" ]; then
+            printf "%s\\n" "$current_date_time"
+            if [ "$( compare_strings "$current_date_time" "$date_time" )" -lt 1 ]; then
                 break
             fi
         done
@@ -257,21 +284,20 @@ add_missing_hour_times() {
 }
 
 get_hostname() {
-    host=`host "$line"`
-    if [ $? -ne 0 ]; then
+    if ! host="$( host "$1" )"; then
         return 1
     fi
-    host="$( echo "$host" | tail -n -1 | awk -F "domain name pointer " '{ print $2 }' )"
+    host="$( printf "%s" "$host" | tail -n -1 | awk -F "domain name pointer " '{ print $2 }' )"
     host="${host%.}" # remove tailing dot
-    echo "$host"
+    printf "%s" "$host"
 }
 
 try_get_hostname() {
-    get_hostname "$1" || get_hostname "$1" || get_hostname "$1" || echo "$1"
+    get_hostname "$1" || get_hostname "$1" || get_hostname "$1" || printf "%s" "$1"
 }
 
 map_get_val() {
-    echo `eval echo '$'$1`
+    eval printf "%s" '$'"$1"
 }
 
 map_set_val() {
@@ -282,17 +308,17 @@ add_map_values_to_names() {
     map_name="$1"
     map_key_regex="$2"
     
-    while read name_line; do # add value before every map name
+    while read -r name_line; do # add value before every map name
         if [ -z "$name_line" ]; then
             continue
         fi
         
-        name_id="$( echo "$name_line" | sed "$map_key_regex" )"
-        name_val=`map_get_val "$map_name$name_id"`
+        name_id="$( printf "%s" "$name_line" | sed "$map_key_regex" )"
+        name_val="$( map_get_val "$map_name$name_id" )"
         if [ -z "$name_val" ]; then
             name_val=0
         fi
-        printf "%s %s\n" "$name_val" "$name_line"
+        printf "%s %s\\n" "$name_val" "$name_line"
     done
 }
 
@@ -307,129 +333,131 @@ draw_hist() {
     if [ -z "$width" ]; then
         graph_width=100
     else
-        graph_width=`expr "$width" - "$max_name_len" - "$max_val_len" - 5`
+        graph_width=$(( width - max_name_len - max_val_len - 5 ))
         if [ "$graph_width" -lt 15 ]; then
             graph_width=15
         fi
     fi
     
     # draw histogram
-    while read val_name_line; do
+    while read -r val_name_line; do
         if [ -z "$val_name_line" ]; then
             continue
         fi
         
-        value="$( echo "$val_name_line" | cut -s -d ' ' -f 1 )"
-        name="$( echo "$val_name_line" | cut -s -d ' ' -f 2- )"
+        value="${val_name_line%% *}"
+        name="${val_name_line#* }"
         
         printf "%${max_name_len}s (%${max_val_len}s): " "$name" "$value"
         
         i=0
-        len=`expr "$value" \* "$graph_width" / "$total_max_value" || true` # true => ignore exit code of expr
+        len=$(( value * graph_width / total_max_value ))
         while [ "$i" -lt "$len" ]; do
             printf "#"
-            i=`expr "$i" + 1`
+            i=$(( i + 1 ))
         done
         while [ "$i" -lt "$graph_width" ]; do # fill remaining space with spaces (keep consistent line length)
             printf " "
-            i=`expr "$i" + 1`
+            i=$(( i + 1 ))
         done
-        printf "\n"
+        printf "\\n"
     done
 }
 
+file_preprocess() {
+    file_extension="$1"
+    
+    case "$file_extension" in
+        gz|*.gz)
+            gzip -d
+        ;;
+        *)
+            cat # nothing to do
+        ;;
+    esac
+}
+
 files_read() {
-    if [ -z "${FILES}" ]; then
+    if [ "$#" -eq 0 ]; then
         cat # read from stdin
     else
-        for file in ${FILES}; do
-            cat "$file" | {
-                case "$file" in
-                    *.gz)
-                        gzip -d
-                    ;;
-                    *)
-                        cat
-                    ;;
-                esac
-            }
+        for file in "$@"; do
+            file_preprocess "${file##*"."}" < "$file"
         done
     fi
 }
 
 files_filter() {
-    while read line; do
-        parsed_line=`parse_log_line "$line"`
+    while read -r line; do
+        parsed_line="$( parse_log_line "$line" )"
         
-        allow=y
         if [ -n "$F_AFTER" ] || [ -n "$F_BEFORE" ]; then
-            dateTime="$( echo "$parsed_line" | sed -n "${I_LOG_DATE_TIME}p" )"
+            dateTime="$( printf "%s" "$parsed_line" | sed -n "${I_LOG_DATE_TIME}p" )"
             if [ -z "$dateTime" ] || [ "$dateTime" = "-" ]; then
-                allow=n
-            else
-                dateTime=`normalize_log_date "$dateTime"`
+                continue
             fi
+            dateTime="$( normalize_log_date "$dateTime" )"
             
-            if [ "$allow" = y ] && [ -n "$F_AFTER" ]; then
-                F_AFTER=`normalize_date "$F_AFTER"`
-                if [ "$dateTime" \< "$F_AFTER" ] || [ "$dateTime" = "$F_AFTER" ]; then
-                    allow=n
+            if [ -n "$F_AFTER" ]; then
+                F_AFTER="$( normalize_date "$F_AFTER" )"
+                if [ "$( compare_strings "$dateTime" "$F_AFTER" )" -gt -1 ]; then
+                    continue
                 fi
             fi
-            if [ "$allow" = y ] && [ -n "$F_BEFORE" ]; then
-                F_BEFORE=`normalize_date "$F_BEFORE"`
-                if [ "$dateTime" \> "$F_BEFORE" ] || [ "$dateTime" = "$F_BEFORE" ]; then
-                    allow=n
+            if [ -n "$F_BEFORE" ]; then
+                F_BEFORE="$( normalize_date "$F_BEFORE" )"
+                if [ "$( compare_strings "$dateTime" "$F_BEFORE" )" -lt 1 ]; then
+                    continue
                 fi
             fi
         fi
         
-        if [ "$allow" = y ] && [ -n "$F_IP" ]; then
-            ip="$( echo "$parsed_line" | sed -n "${I_LOG_IP}p" )"
+        if [ -n "$F_IP" ]; then
+            ip="$( printf "%s" "$parsed_line" | sed -n "${I_LOG_IP}p" )"
             if [ -z "$ip" ] || [ "$ip" = "-" ] || [ "$ip" != "$F_IP" ]; then
-                allow=n
+                continue
             fi
         fi
         
-        if [ "$allow" = y ] && [ -n "$F_URI" ]; then
-            uri="$( echo "$parsed_line" | sed -n "${I_LOG_HTTP_URI}p" )"
+        if [ -n "$F_URI" ]; then
+            uri="$( printf "%s" "$parsed_line" | sed -n "${I_LOG_HTTP_URI}p" )"
             if [ -z "$uri" ] || [ "$uri" = "-" ] || [ "$uri" != "$F_URI" ]; then
-                allow=n
+                continue
             fi
         fi
         
-        if [ "$allow" = y ]; then
-            echo "$line"
-        fi
+        printf "%s\\n" "$line"
     done
 }
 
 cmd_list_ip() { # FIXME: Should we print out duplicates?!
     {
-        while read line; do
-            parsed_line=`parse_log_line "$line"`
-            echo "$( echo "$parsed_line" | sed -n "${I_LOG_IP}p" )"
+        while read -r line; do
+            parsed_line="$( parse_log_line "$line" )"
+            printf "%s" "$parsed_line" | sed -n "${I_LOG_IP}p"
+            # no need to print new line, sed have already done that
         done
     } | sort -u
 }
 
 cmd_list_hosts() { # FIXME: Should we print out duplicates?!
     cmd_list_ip | {
-        while read line; do
-            echo "$( try_get_hostname "$line" )"
+        while read -r line; do
+            try_get_hostname "$line"
+            printf "\\n"
         done
     } | sort -u
 }
 
 cmd_list_uri() {
     {
-        while read line; do
-            parsed_line=`parse_log_line "$line"`
-            uri="$( echo "$parsed_line" | sed -n "${I_LOG_HTTP_URI}p" )"
+        while read -r line; do
+            parsed_line="$( parse_log_line "$line" )"
+            uri="$( printf "%s" "$parsed_line" | sed -n "${I_LOG_HTTP_URI}p" )"
             if [ -z "$uri" ] || [ "$uri" = "-" ]; then
                 continue
             fi
-            echo "$uri"
+            printf "%s\\n" "$uri"
         done
     } | sort -u
 }
@@ -440,23 +468,24 @@ cmd_hist_ip() {
     map_name="ip_map_"
     map_key_regex='s/[.:]/_/g'
     map_names=""
-    while read line; do # calculate usage for every ip
-        parsed_line=`parse_log_line "$line"`
-        name="$( echo "$parsed_line" | sed -n "${I_LOG_IP}p" )"
-        name_id="$( echo "$name" | sed "$map_key_regex" )"
+    
+    while read -r line; do # calculate usage for every ip
+        parsed_line="$( parse_log_line "$line" )"
+        name="$( printf "%s" "$parsed_line" | sed -n "${I_LOG_IP}p" )"
+        name_id="$( printf "%s" "$name" | sed "$map_key_regex" )"
         
         name_len="$( printf "%s" "$name" | wc -m )"
         if [ "$name_len" -gt "$max_name_len" ]; then
             max_name_len="$name_len"
         fi
         
-        name_val=`map_get_val "$map_name$name_id"`
+        name_val="$( map_get_val "$map_name$name_id" )"
         if [ -z "$name_val" ]; then
             name_val=0
-            map_names="$map_names$name$EOL"
+            map_names="${map_names} $( str_quote "$name" )"
         fi
         
-        name_val=`expr "$name_val" + 1`
+        name_val=$(( name_val + 1 ))
         if [ "$name_val" -gt "$total_max_value" ]; then
             total_max_value="$name_val"
         fi
@@ -464,7 +493,9 @@ cmd_hist_ip() {
         map_set_val "$map_name$name_id" "$name_val"
     done
     
-    echo "$map_names" | add_map_values_to_names "$map_name" "$map_key_regex" | sort -n -r | draw_hist "$max_name_len" "$total_max_value"
+    {
+        eval "args_to_lines ${map_names}"
+    } | add_map_values_to_names "$map_name" "$map_key_regex" | sort -n -r | draw_hist "$max_name_len" "$total_max_value"
 }
 
 cmd_hist_load() {
@@ -473,23 +504,24 @@ cmd_hist_load() {
     map_name="time_map_"
     map_key_regex='s/[ :-]/_/g'
     map_names=""
-    while read line; do # calculate usage for every hour
-        parsed_line=`parse_log_line "$line"`
-        name="$( beautify_hour_date "$( normalize_log_date "$( echo "$parsed_line" | sed -n "${I_LOG_DATE_TIME}p" )" )" )"
-        name_id="$( echo "$name" | sed "$map_key_regex" )"
+    
+    while read -r line; do # calculate usage for every hour
+        parsed_line="$( parse_log_line "$line" )"
+        name="$( beautify_hour_date "$( normalize_log_date "$( printf "%s" "$parsed_line" | sed -n "${I_LOG_DATE_TIME}p" )" )" )"
+        name_id="$( printf "%s" "$name" | sed "$map_key_regex" )"
         
         name_len="$( printf "%s" "$name" | wc -m )"
         if [ "$name_len" -gt "$max_name_len" ]; then
             max_name_len="$name_len"
         fi
         
-        name_val=`map_get_val "$map_name$name_id"`
+        name_val="$( map_get_val "$map_name$name_id" )"
         if [ -z "$name_val" ]; then
             name_val=0
-            map_names="$map_names$name$EOL"
+            map_names="${map_names} $( str_quote "$name" )"
         fi
         
-        name_val=`expr "$name_val" + 1`
+        name_val=$(( name_val + 1 ))
         if [ "$name_val" -gt "$total_max_value" ]; then
             total_max_value="$name_val"
         fi
@@ -498,14 +530,16 @@ cmd_hist_load() {
     done
     
     # | add_missing_hour_times # FIXME: should be added!?
-    echo "$map_names" | sort | add_map_values_to_names "$map_name" "$map_key_regex" | draw_hist "$max_name_len" "$total_max_value"
+    {
+        eval "args_to_lines ${map_names}"
+    } | sort | add_map_values_to_names "$map_name" "$map_key_regex" | draw_hist "$max_name_len" "$total_max_value"
 }
 
 cmd_basic_print() {
     cat # just print out input
 }
 
-files_read | files_filter | {
+{ eval "files_read ${FILES}"; } | files_filter | {
     case "$CMD" in
         list-ip) # výpis seznamu zdrojových IP adres
             cmd_list_ip
