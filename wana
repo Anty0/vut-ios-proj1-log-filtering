@@ -9,8 +9,8 @@ set +o | grep "posix" | {
 
 abort()
 {
-    printf "\\n"
-    cat << EOT
+    printf "\\n" >&2
+    cat >&2 << EOT
  ___________________________________________ 
 |        ||                                 |
 |        || <-- Program                     |
@@ -30,7 +30,7 @@ abort()
 
 EOT
 
-    printf "%s: %s\\n" "$SCRIPT_NAME" "Execution of script failed..."
+    printf "%s: %s\\n" "$SCRIPT_NAME" "Execution of script failed..." >&2
     exit 1 # make sure we exit with exit code on abort
 }
 trap 'abort' 0
