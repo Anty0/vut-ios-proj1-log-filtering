@@ -187,39 +187,6 @@ normalize_date_arg() {
 }
 
 fix_log_dates() {
-    # TODO: remove this commented awk
-    # awk -F "_" '
-    # {
-    #     if ($2 == "Jan")
-    #         $2 = "01"
-    #     else if ($2 == "Feb")
-    #         $2 = "02"
-    #     else if ($2 == "Mar")
-    #         $2 = "03"
-    #     else if ($2 == "Apr")
-    #         $2 = "04"
-    #     else if ($2 == "May")
-    #         $2 = "05"
-    #     else if ($2 == "Jun")
-    #         $2 = "06"
-    #     else if ($2 == "Jul")
-    #         $2 = "07"
-    #     else if ($2 == "Aug")
-    #         $2 = "08"
-    #     else if ($2 == "Sep")
-    #         $2 = "09"
-    #     else if ($2 == "Oct")
-    #         $2 = "10"
-    #     else if ($2 == "Nov")
-    #         $2 = "11"
-    #     else if ($2 == "Dec")
-    #         $2 = "12"
-    #     else
-    #         $2 = "00"
-    # }
-    # { print $3 "_" $2 "_" $1 "_" $4 "_" $5 "_" $6 }
-    # '
-
     sed -n \
         -e 's/Jan/01/;s/Feb/02/;s/Mar/03/;s/Apr/04/;s/May/05/;s/Jun/06/;s/Jul/07/;s/Aug/08/;s/Sep/09/;s/Oct/10/;s/Nov/11/;s/Dec/12/' \
         -e 's/^\([0-9][0-9]\)_\([0-9][0-9]\)_\([0-9][0-9][0-9][0-9]\)_\([0-9][0-9]\)_\([0-9][0-9]\)_\([0-9][0-9]\).*$/\3_\2_\1_\4_\5_\6/p'
