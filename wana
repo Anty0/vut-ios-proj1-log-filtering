@@ -446,6 +446,11 @@ files_read() {
 }
 
 files_filter() {
+    if [ -z "$F_AFTER" ] && [ -z "$F_BEFORE" ] && [ -z "$F_IP" ] && [ -z "$F_URI" ]; then
+        cat # nothing to filter
+        return
+    fi
+
     if [ -n "$F_AFTER" ]; then
         F_NORM_AFTER="$( normalize_input_date "$F_AFTER" )"
     fi
@@ -615,7 +620,7 @@ cmd_basic_print() {
         hist-load) # výpis histogramu zátěže (tj. počtu dotazů ve jednotlivých časových intervalech)
             cmd_hist_load
         ;;
-        "") # no command
+        '') # no command
             cmd_basic_print
         ;;
         *) # unknown command
