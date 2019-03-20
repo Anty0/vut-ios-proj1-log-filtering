@@ -7,6 +7,7 @@ set +o | grep "posix" | {
     done
 }
 
+###ERROR HANDLING###+
 abort()
 {
     printf "\\n" >&2
@@ -38,10 +39,10 @@ trap 'abort' 0
 set -e
 #set -x
 
-EOL="$( printf '\\n ' )" && EOL="${EOL% }"
 SCRIPT_NAME="$( basename "$0"; echo n )" && SCRIPT_NAME=${SCRIPT_NAME%??}
-EXIT_CODE_UNKNOWN_COMMAND=1
+EXIT_CODE_INVALID_COMMAND=1
 EXIT_CODE_INVALID_LOG_FILE=2
+EXIT_CODE_INVALID_FILTER=3
 
 error_exit() {
     exit_code="$1"
@@ -50,20 +51,12 @@ error_exit() {
     exit "$exit_code"
 }
 
-error_warn() {
-    printf "%s: %s\\n" "$SCRIPT_NAME" "$@" 1>&2
-}
-
 str_quote() {
     printf %s\\n "$1" | sed -e "s/'/'\\\\''/g" -e "1s/^/'/" -e "\$s/\$/'/"
 }
+###ERROR HANDLING###-
 
-args_to_lines() {
-    for arg in "$@"; do
-        printf "%s\\n" "$arg"
-    done
-}
-
+###UTILITIES###+
 compare_strings() {
     if [ "$1" = "$2" ]; then
         printf "%d" "0"
@@ -81,190 +74,163 @@ is_unsigned_num() {
     esac
 }
 
+trim() {
+    awk '{ $1=$1; print }'
+}
+###UTILITIES###-
+
+###ARGUMENTS PROCESSING###+
 F_AFTER=""
 F_BEFORE=""
 F_IP=""
 F_URI=""
 
+{ # Parse arguments
+    ARG_END=n
+    OTHERS=""
+    while [ "$#" -gt 0 ]; do
+        if [ "$ARG_END" = y ]; then
+            OTHERS="${OTHERS} $( str_quote "$1" )"
+            shift # arg
+        else
+            case "$1" in
+                -a) # DATETIME – after = jsou uvažovány pouze záznamy PO tomto datu (bez tohoto data). DATETIME je formátu YYYY-MM-DD HH:MM:SS
+                    F_AFTER="$2"
+                    if [ -z "$F_AFTER" ]; then
+                        error_exit "$EXIT_CODE_INVALID_FILTER" "Invalid date (for -a): Empty argument"
+                    fi
+                    shift 2 # arg + val
+                ;;
+                -b) # DATETIME – before, jsou uvažovány pouze záznamy PŘED tímto datem (bez tohodo data)
+                    F_BEFORE="$2"
+                    if [ -z "$F_BEFORE" ]; then
+                        error_exit "$EXIT_CODE_INVALID_FILTER" "Invalid date (for -b): Empty argument"
+                    fi
+                    shift 2 # arg + val
+                ;;
+                -ip) # IPADDR – jsou uvažovány pouze záznamy odpovídající požadavkům ze zdrojové adresy IPADDR. Formát IPADDR odpovídá IPv4 nebo IPv6.
+                    F_IP="$2"
+                    if [ -z "$F_IP" ]; then
+                        error_exit "$EXIT_CODE_INVALID_FILTER" "Invalid ip (for -ip): Empty argument"
+                    fi
+                    shift 2 # arg + val
+                ;;
+                -uri) # URI – jsou uvažovány pouze záznamy týkající se dotazů na konkrétní webovou stránku. URI je základní regulární výraz.
+                    F_URI="$2"
+                    if [ -z "$F_URI" ]; then
+                        error_exit "$EXIT_CODE_INVALID_FILTER" "Invalid uri (for -uri): Empty argument"
+                    fi
+                    shift 2 # arg + val
+                ;;
+                --) # end of arguments
+                    ARG_END=y
+                    shift # arg
+                ;;
+                *)
+                    OTHERS="${OTHERS} $( str_quote "$1" )"
+                    shift # arg
+                ;;
+            esac
+        fi
+    done
+    eval "set -- ${OTHERS}"
 
-ARG_END=n
-OTHERS=""
-while [ "$#" -gt 0 ]; do
-    if [ "$ARG_END" = y ]; then
-        OTHERS="${OTHERS} $( str_quote "$1" )"
-        shift # arg
-    else
-        case "$1" in
-            -a) # DATETIME – after = jsou uvažovány pouze záznamy PO tomto datu (bez tohoto data). DATETIME je formátu YYYY-MM-DD HH:MM:SS
-                F_AFTER="$2"
-                if [ -z "$F_AFTER" ]; then
-                    error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Invalid date (for -a): Empty argument"
-                fi
-                shift 2 # arg + val
-            ;;
-            -b) # DATETIME – before, jsou uvažovány pouze záznamy PŘED tímto datem (bez tohodo data)
-                F_BEFORE="$2"
-                if [ -z "$F_BEFORE" ]; then
-                    error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Invalid date (for -b): Empty argument"
-                fi
-                shift 2 # arg + val
-            ;;
-            -ip) # IPADDR – jsou uvažovány pouze záznamy odpovídající požadavkům ze zdrojové adresy IPADDR. Formát IPADDR odpovídá IPv4 nebo IPv6.
-                F_IP="$2"
-                if [ -z "$F_IP" ]; then
-                    error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Invalid ip (for -ip): Empty argument"
-                fi
-                shift 2 # arg + val
-            ;;
-            -uri) # URI – jsou uvažovány pouze záznamy týkající se dotazů na konkrétní webovou stránku. URI je základní regulární výraz.
-                F_URI="$2"
-                if [ -z "$F_URI" ]; then
-                    error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Invalid uri (for -uri): Empty argument"
-                fi
-                shift 2 # arg + val
-            ;;
-            --) # end of arguments
-                ARG_END=y
-                shift # arg
-            ;;
-            *)
-                OTHERS="${OTHERS} $( str_quote "$1" )"
-                shift # arg
-            ;;
-        esac
-    fi
-done
-eval "set -- ${OTHERS}"
+    CMD=""
+    FILES=""
 
-CMD=""
-FILES=""
-
-for arg in "$@"; do # TODO: How can we distinguish between command and log file?!
-    if [ -e "$arg" ]; then
-        FILES="${FILES} $( str_quote "$arg" )"
-        continue
-    fi
-    case "$arg" in
-        *.log | *.gz)
-            if [ ! -e "$arg" ]; then
-                error_exit "$EXIT_CODE_INVALID_LOG_FILE" "Invalid log file: $arg"
+    { # Check command and files
+        add_file() {
+            if [ ! -e "$1" ]; then
+                error_exit "$EXIT_CODE_INVALID_LOG_FILE" "Invalid log file: $1"
             fi
-            FILES="${FILES} $( str_quote "$arg" )"
-        ;;
-        *)
-            if [ -z "$CMD" ]; then
-                if [ -z "$arg" ]; then
-                    error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Unknown command: Empty argument"
-                fi
-                CMD="$arg"
-            else
-                error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Failed to parse arguments: Only single command supported"
+            FILES="${FILES} $( str_quote "$1" )"
+        }
+
+        for arg in "$@"; do
+            if [ -n "$CMD" ]; then
+                add_file "$arg"
+                continue
             fi
-        ;;
-    esac
-done
 
-# Log line format:
-I_LOG_IP=1           # $1       =  1      -> IP
-I_LOG_IDENTITY=2     # $2       =  2      -> Identity
-I_LOG_USER_ID=3      # $3       =  3      -> User ID
-I_LOG_DATE_TIME=4    # $4       = [4]     -> Date and time
-I_LOG_HTTP_METHOD=5
-I_LOG_HTTP_URI=6
-I_LOG_HTTP_VERSION=7 # $5 $6 $7 = "5 6 7" -> Http method + uri + version
-# I_LOG_HTTP_STATUS=8  # $8       =  8      -> Http status
-# I_LOG_SENT_SIZE=9    # $9       =  9      -> Sent data size
-# I_LOG_REFERER=10     # $10      = "10"    -> Referer?
-# I_LOG_USER_AGENT=11  # $11      = "11"    -> User agent
+            case "$arg" in
+                list-ip|list-hosts|list-uri|hist-ip|hist-load)
+                    CMD="$arg"
+                ;;
+                *)
+                    add_file "$arg"
+                ;;
+            esac
+        done
+    }
+}
+###ARGUMENTS PROCESSING###-
 
-parse_log_line() {
-    # Regex in posix was unusable...
-    # So parsing will be done manually.
-    line="$1"
-    
-    printf "%s\\n" "${line%% *}" # ip
-    line="${line#* }"
-    printf "%s\\n" "${line%% *}" # identity
-    line="${line#* }"
-    printf "%s\\n" "${line%% *}" # userId
-    line="${line#* \[}"
-    printf "%s\\n" "${line%%\]*}" # dateTime
-    line="${line#*\] \"}"
-    httpInfo="${line%%\"*}"
-    if [ "${httpInfo%% *}" = "$httpInfo" ]; then
-        printf "%s\\n" "-" # httpMethod
-        printf "%s\\n" "-" # httpUri
-        printf "%s\\n" "-" # httpVersion
-        # httpInfoGarbage="""
-    else
-        printf "%s\\n" "${httpInfo%% *}" # httpMethod
-        httpInfo="${httpInfo#* }"
-        printf "%s\\n" "${httpInfo%% *}" # httpUri
-        httpInfo="${httpInfo#* }"
-        printf "%s\\n" "${httpInfo%% *}" # httpVersion
-        # httpInfoGarbage="$( printf "%s" "$httpInfo" | cut -s -d ' ' -f 2- )" # httpInfoGarbage
-    fi
-    
-    # line="${line#*\" }"
-    # printf "%s\\n" "${line%% *}" # httpStatus
-    # line="${line#* }"
-    # printf "%s\\n" "${line%% *}" # sentDataSize
-    # line="${line#* \"}"
-    # printf "%s\\n" "${line%%\"*}" # referer
-    # line="${line#*\" \"}"
-    # printf "%s\\n" "${line%%\"*}" # userAgent
-    
-    # line="$( printf "%s" "$line" | cut -s -d \" -f 2- )"
-    
-    # printf "%s" "$line" # garbage
-    
-    # if [ -n "$line" ]; then
-    #     error_warn "Found malformed log line!"
-    # fi
+
+log_list_ip() {
+    cut -s -d ' ' -f 1
 }
 
-normalize_date() {
-    printf "%s" "$1" | sed 's/[\/\\.: -]/_/g'
+log_list_time() {
+    sed -n 's/^.*\[\(.*\)\].*$/\1/p'
 }
 
-month_name_to_int() {
-    case "$1" in
-        Jan) printf "01" ;;
-        Feb) printf "02" ;;
-        Mar) printf "03" ;;
-        Apr) printf "04" ;;
-        May) printf "05" ;;
-        Jun) printf "06" ;;
-        Jul) printf "07" ;;
-        Aug) printf "08" ;;
-        Sep) printf "09" ;;
-        Oct) printf "10" ;;
-        Nov) printf "11" ;;
-        Dec) printf "12" ;;
-        *) printf "00" ;;
-    esac
+log_list_uri() {
+    sed -n 's/^[^ ]* [^ ]* [^ ]* \[[^][]*\] "[^" ]* \([^" ]*\) [^" ]*".*$/\1/p'
 }
 
-normalize_log_date() {
-    date="$( normalize_date "$1" )"
-    
-    dd="${date%%_*}" && ! is_unsigned_num "$dd" && dd="00"
-    date="${date#*_}"
-    mm="$( month_name_to_int "${date%%_*}" )"
-    date="${date#*_}"
-    yyyy="${date%%_*}" && ! is_unsigned_num "$yyyy" && yyyy="0000"
-    date="${date#*_}"
-    hh="${date%%_*}" && ! is_unsigned_num "$hh" && hh="00"
-    date="${date#*_}"
-    mn="${date%%_*}" && ! is_unsigned_num "$mn" && mn="00"
-    date="${date#*_}"
-    ss="${date%%_*}" && ! is_unsigned_num "$ss" && ss="00"
-    
-    printf "%4s_%2s_%2s_%2s_%2s_%2s" "$yyyy" "$mm" "$dd" "$hh" "$mn" "$ss" | tr ' ' '0'
+normalize_dates() {
+    sed 's/[\/\\.: -]/_/g'
 }
 
-normalize_input_date() {
-    date="$( normalize_date "$1" )"
+normalize_date_arg() {
+    printf "%s" "$1" | normalize_dates
+}
+
+fix_log_dates() {
+    # TODO: remove this commented awk
+    # awk -F "_" '
+    # {
+    #     if ($2 == "Jan")
+    #         $2 = "01"
+    #     else if ($2 == "Feb")
+    #         $2 = "02"
+    #     else if ($2 == "Mar")
+    #         $2 = "03"
+    #     else if ($2 == "Apr")
+    #         $2 = "04"
+    #     else if ($2 == "May")
+    #         $2 = "05"
+    #     else if ($2 == "Jun")
+    #         $2 = "06"
+    #     else if ($2 == "Jul")
+    #         $2 = "07"
+    #     else if ($2 == "Aug")
+    #         $2 = "08"
+    #     else if ($2 == "Sep")
+    #         $2 = "09"
+    #     else if ($2 == "Oct")
+    #         $2 = "10"
+    #     else if ($2 == "Nov")
+    #         $2 = "11"
+    #     else if ($2 == "Dec")
+    #         $2 = "12"
+    #     else
+    #         $2 = "00"
+    # }
+    # { print $3 "_" $2 "_" $1 "_" $4 "_" $5 "_" $6 }
+    # '
+
+    sed -n \
+        -e 's/Jan/01/;s/Feb/02/;s/Mar/03/;s/Apr/04/;s/May/05/;s/Jun/06/;s/Jul/07/;s/Aug/08/;s/Sep/09/;s/Oct/10/;s/Nov/11/;s/Dec/12/' \
+        -e 's/^\([0-9][0-9]\)_\([0-9][0-9]\)_\([0-9][0-9][0-9][0-9]\)_\([0-9][0-9]\)_\([0-9][0-9]\)_\([0-9][0-9]\).*$/\3_\2_\1_\4_\5_\6/p'
+}
+
+normalize_log_dates() {
+    normalize_dates | fix_log_dates
+}
+
+normalize_input_date_arg() {
+    date="$( normalize_date_arg "$1" )"
     
     yyyy="${date%%_*}" && ! is_unsigned_num "$yyyy" && yyyy="0000"
     date="${date#*_}"
@@ -281,67 +247,16 @@ normalize_input_date() {
     printf "%4s_%2s_%2s_%2s_%2s_%2s" "$yyyy" "$mm" "$dd" "$hh" "$mn" "$ss" | tr ' ' '0'
 }
 
-beautify_hour_date() { # YYYY-MM-DD HH:00
-    date="$1"
-    
-    yyyy="${date%%_*}"
-    date="${date#*_}"
-    mm="${date%%_*}"
-    date="${date#*_}"
-    dd="${date%%_*}"
-    date="${date#*_}"
-    hh="${date%%_*}"
-    
-    printf "%s-%s-%s %s:%s" "$yyyy" "$mm" "$dd" "$hh" "00"
+beautify_hour_dates() { # YYYY-MM-DD HH:00
+    awk -F "_" '{ print $1 "-" $2 "-" $3 " " $4 ":00" }'
 }
-
-# next_beautify_hour_date() { # no longer required
-#     date="$( printf "%s" "$1" | sed 's/[ :-]/_/g' )"
-    
-#     yyyy="${date%%_*}"
-#     date="${date#*_}"
-#     mm="${date%%_*}"
-#     date="${date#*_}"
-#     dd="${date%%_*}"
-#     date="${date#*_}"
-#     hh="${date%%_*}"
-    
-#     hh=$(( hh + 1 ))
-#     if [ "$hh" -gt 23 ]; then
-#         return
-#     fi
-    
-#     hh=$( printf "%02d" "$hh" )
-#     printf "%s-%s-%s %s:%s" "$yyyy" "$mm" "$dd" "$hh" "00"
-# }
-
-# add_missing_hour_times() { # not required
-#     while read -r current_date_time && [ -z "$current_date_time" ]; do :; done
-#     printf "%s\\n" "$current_date_time"
-    
-#     while read -r date_time; do # add missing hours from input
-#         while :; do
-#             current_date_time=$( next_beautify_hour_date "$current_date_time" )
-#             if [ -z "$current_date_time" ]; then # can't predict next time
-#                 current_date_time="$date_time"
-#                 printf "%s\\n" "$current_date_time"
-#                 break
-#             fi
-            
-#             printf "%s\\n" "$current_date_time"
-#             if [ "$( compare_strings "$current_date_time" "$date_time" )" -lt 1 ]; then
-#                 break
-#             fi
-#         done
-#     done
-# }
 
 get_hostname() {
     if ! host="$( host "$1" )"; then
         return 1
     fi
     host="$( printf "%s" "$host" | tail -n -1 | awk -F "domain name pointer " '{ print $2 }' )"
-    host="${host%.}" # remove tailing dot
+    #host="${host%.}" # remove tailing dot
     printf "%s" "$host"
 }
 
@@ -349,50 +264,8 @@ try_get_hostname() {
     get_hostname "$1" || get_hostname "$1" || get_hostname "$1" || printf "%s" "$1"
 }
 
-map_get_val() {
-    eval printf "%s" '$'"$1"
-}
-
-map_set_val() {
-    eval "$1='$2'"
-}
-
-add_map_values_to_names() {
-    map_name="$1"
-    map_key_regex="$2"
-    
-    while read -r name_line; do # add value before every map name
-        if [ -z "$name_line" ]; then
-            continue
-        fi
-        
-        name_id="$( printf "%s" "$name_line" | sed "$map_key_regex" )"
-        name_val="$( map_get_val "$map_name$name_id" )"
-        if [ -z "$name_val" ]; then
-            name_val=0
-        fi
-        printf "%s %s\\n" "$name_val" "$name_line"
-    done
-}
-
 draw_hist() {
-    # max_name_len="$1"
-    # total_max_value="$2"
-    
-    # max_val_len="$( printf "%s" "$total_max_value" | wc -m )"
-    
-    # calculate graph width
-    # width=$( tput cols 2> /dev/null )
-    # if [ -z "$width" ]; then
-    #     graph_width=100
-    # else
-    #     graph_width=$(( width - max_name_len - max_val_len - 5 ))
-    #     if [ "$graph_width" -lt 15 ]; then
-    #         graph_width=15
-    #     fi
-    # fi
-    
-    # draw histogram
+    # Draw histogram
     while read -r val_name_line; do
         if [ -z "$val_name_line" ]; then
             continue
@@ -401,24 +274,8 @@ draw_hist() {
         value="${val_name_line%% *}"
         name="${val_name_line#* }"
         
-        #printf "%${max_name_len}s (%${max_val_len}s): " "$name" "$value"
         printf "%s (%s): " "$name" "$value"
-        
-        i=0
-        # len=$(( value * graph_width / total_max_value ))
-        # while [ "$i" -lt "$len" ]; do
-        #     printf "#"
-        #     i=$(( i + 1 ))
-        # done
-        # while [ "$i" -lt "$graph_width" ]; do # fill remaining space with spaces (keep consistent line length)
-        #     printf " "
-        #     i=$(( i + 1 ))
-        # done
-        while [ "$i" -lt "$value" ]; do
-            printf "#"
-            i=$(( i + 1 ))
-        done
-        printf "\\n"
+        printf "%${value}s\\n" "" | tr " " "#"
     done
 }
 
@@ -446,65 +303,62 @@ files_read() {
 }
 
 files_filter() {
-    if [ -z "$F_AFTER" ] && [ -z "$F_BEFORE" ] && [ -z "$F_IP" ] && [ -z "$F_URI" ]; then
-        cat # nothing to filter
-        return
-    fi
-
-    if [ -n "$F_AFTER" ]; then
-        F_NORM_AFTER="$( normalize_input_date "$F_AFTER" )"
-    fi
-    if [ -n "$F_BEFORE" ]; then
-        F_NORM_BEFORE="$( normalize_input_date "$F_BEFORE" )"
-    fi
-    
-    while read -r line; do
-        parsed_line="$( parse_log_line "$line" )"
-        
-        if [ -n "$F_NORM_AFTER" ] || [ -n "$F_NORM_BEFORE" ]; then
-            dateTime="$( printf "%s" "$parsed_line" | sed -n "${I_LOG_DATE_TIME}p" )"
-            if [ -z "$dateTime" ] || [ "$dateTime" = "-" ]; then
-                continue
-            fi
-            dateTime="$( normalize_log_date "$dateTime" )"
-            
-            if [ -n "$F_NORM_AFTER" ] && [ "$( compare_strings "$dateTime" "$F_NORM_AFTER" )" -gt -1 ]; then
-                continue
-            fi
-            if [ -n "$F_NORM_BEFORE" ] && [ "$( compare_strings "$dateTime" "$F_NORM_BEFORE" )" -lt 1 ]; then
-                continue
-            fi
-        fi
-        
-        if [ -n "$F_IP" ]; then
-            ip="$( printf "%s" "$parsed_line" | sed -n "${I_LOG_IP}p" )"
-            if [ -z "$ip" ] || [ "$ip" = "-" ] || [ "$ip" != "$F_IP" ]; then
-                continue
-            fi
-        fi
-        
-        if [ -n "$F_URI" ]; then
-            uri="$( printf "%s" "$parsed_line" | sed -n "${I_LOG_HTTP_URI}p" )"
-            if [ -z "$uri" ] || [ "$uri" = "-" ] || [ -z "$( printf "%s" "$uri" | grep -- "$F_URI" )" ]; then
-                continue
-            fi
-        fi
-        
-        printf "%s\\n" "$line"
-    done
-}
-
-cmd_list_ip() { # FIXME: Should we print out duplicates?!
     {
-        while read -r line; do
-            parsed_line="$( parse_log_line "$line" )"
-            printf "%s" "$parsed_line" | sed -n "${I_LOG_IP}p"
-            # no need to print new line, sed have already done that
-        done
-    } | sort -u
+        if [ -n "$F_IP" ]; then
+            awk -v ip="$F_IP" -F ' ' '{
+                if ($1 == ip) print
+            }'
+        else
+            cat # Nothing to filter
+        fi
+    } | {
+        if [ -n "$F_URI" ]; then
+            while read -r line; do
+                uri="$( printf "%s" "$line" | log_list_uri )"
+                if [ -z "$uri" ] || [ -z "$( printf "%s" "$uri" | grep -- "$F_URI" )" ]; then
+                    continue
+                fi
+                printf "%s\\n" "$line"
+            done
+        else
+            cat # Nothing to filter
+        fi
+    } | {
+        if [ -n "$F_AFTER" ] || [ -n "$F_BEFORE" ]; then
+            if [ -n "$F_AFTER" ]; then
+                F_NORM_AFTER="$( normalize_input_date_arg "$F_AFTER" )"
+            fi
+            if [ -n "$F_BEFORE" ]; then
+                F_NORM_BEFORE="$( normalize_input_date_arg "$F_BEFORE" )"
+            fi
+
+            while read -r line; do
+                dateTime="$( printf "%s" "$line" | log_list_time )"
+                if [ -z "$dateTime" ] || [ "$dateTime" = "-" ]; then
+                    continue
+                fi
+                dateTime="$( printf "%s" "$dateTime" | normalize_log_dates )"
+
+                
+                if [ -n "$F_AFTER" ] && [ "$( compare_strings "$dateTime" "$F_NORM_AFTER" )" -gt -1 ]; then
+                    continue
+                fi
+                if [ -n "$F_BEFORE" ] && [ "$( compare_strings "$dateTime" "$F_NORM_BEFORE" )" -lt 1 ]; then
+                    continue
+                fi
+                printf "%s\\n" "$line"
+            done
+        else
+            cat # Nothing to filter
+        fi
+    }
 }
 
-cmd_list_hosts() { # FIXME: Should we print out duplicates?!
+cmd_list_ip() {
+    log_list_ip | sort -u
+}
+
+cmd_list_hosts() {
     cmd_list_ip | {
         while read -r line; do
             try_get_hostname "$line"
@@ -514,119 +368,47 @@ cmd_list_hosts() { # FIXME: Should we print out duplicates?!
 }
 
 cmd_list_uri() {
-    {
-        while read -r line; do
-            parsed_line="$( parse_log_line "$line" )"
-            uri="$( printf "%s" "$parsed_line" | sed -n "${I_LOG_HTTP_URI}p" )"
-            if [ -z "$uri" ] || [ "$uri" = "-" ]; then
-                continue
-            fi
-            printf "%s\\n" "$uri"
-        done
-    } | sort -u
+    log_list_uri | sort -u
 }
 
 cmd_hist_ip() {
-    #max_name_len=5
-    #total_max_value=0
-    map_name="ip_map_"
-    map_key_regex='s/[.:]/_/g'
-    map_names=""
-    
-    while read -r line; do # calculate usage for every ip
-        parsed_line="$( parse_log_line "$line" )"
-        name="$( printf "%s" "$parsed_line" | sed -n "${I_LOG_IP}p" )"
-        name_id="$( printf "%s" "$name" | sed "$map_key_regex" )"
-        
-        # name_len="$( printf "%s" "$name" | wc -m )"
-        # if [ "$name_len" -gt "$max_name_len" ]; then
-        #     max_name_len="$name_len"
-        # fi
-        
-        name_val="$( map_get_val "$map_name$name_id" )"
-        if [ -z "$name_val" ]; then
-            name_val=0
-            map_names="${map_names} $( str_quote "$name" )"
-        fi
-        
-        name_val=$(( name_val + 1 ))
-        # if [ "$name_val" -gt "$total_max_value" ]; then
-        #     total_max_value="$name_val"
-        # fi
-        
-        map_set_val "$map_name$name_id" "$name_val"
-    done
-    
-    {
-        eval "args_to_lines ${map_names}"
-    } | add_map_values_to_names "$map_name" "$map_key_regex" | sort -n -r | draw_hist # "$max_name_len" "$total_max_value"
+    log_list_ip | sort | uniq -c | sort -n -r | trim | draw_hist
 }
 
 cmd_hist_load() {
-    # max_name_len=16 # YYYY-MM-DD HH:MM
-    # total_max_value=0
-    map_name="time_map_"
-    map_key_regex='s/[ :-]/_/g'
-    map_names=""
-    
-    while read -r line; do # calculate usage for every hour
-        parsed_line="$( parse_log_line "$line" )"
-        name="$( beautify_hour_date "$( normalize_log_date "$( printf "%s" "$parsed_line" | sed -n "${I_LOG_DATE_TIME}p" )" )" )"
-        name_id="$( printf "%s" "$name" | sed "$map_key_regex" )"
-        
-        # name_len="$( printf "%s" "$name" | wc -m )"
-        # if [ "$name_len" -gt "$max_name_len" ]; then
-        #     max_name_len="$name_len"
-        # fi
-        
-        name_val="$( map_get_val "$map_name$name_id" )"
-        if [ -z "$name_val" ]; then
-            name_val=0
-            map_names="${map_names} $( str_quote "$name" )"
-        fi
-        
-        name_val=$(( name_val + 1 ))
-        # if [ "$name_val" -gt "$total_max_value" ]; then
-        #     total_max_value="$name_val"
-        # fi
-        
-        map_set_val "$map_name$name_id" "$name_val"
-    done
-    
-    # | add_missing_hour_times # not required
-    {
-        eval "args_to_lines ${map_names}"
-    } | sort | add_map_values_to_names "$map_name" "$map_key_regex" | draw_hist # "$max_name_len" "$total_max_value"
+    log_list_time | normalize_log_dates | beautify_hour_dates | sort | uniq -c | trim | draw_hist
 }
 
 cmd_basic_print() {
     cat # just print out input
 }
 
-{ eval "files_read ${FILES}"; } | files_filter | {
-    case "$CMD" in
-        list-ip) # výpis seznamu zdrojových IP adres
-            cmd_list_ip
-        ;;
-        list-hosts) # výpis seznamu zdrojových doménových jmen
-            cmd_list_hosts
-        ;;
-        list-uri) # výpis seznamu cílových zdrojů (URI)
-            cmd_list_uri
-        ;;
-        hist-ip) # výpis histogramu četností dotazů podle zdrojových IP adres
-            cmd_hist_ip
-        ;;
-        hist-load) # výpis histogramu zátěže (tj. počtu dotazů ve jednotlivých časových intervalech)
-            cmd_hist_load
-        ;;
-        '') # no command
-            cmd_basic_print
-        ;;
-        *) # unknown command
-            error_exit "$EXIT_CODE_UNKNOWN_COMMAND" "Unknown command: $CMD"
-        ;;
-    esac
+{ # Process command
+    { eval "files_read ${FILES}"; } | files_filter | {
+        case "$CMD" in
+            list-ip) # výpis seznamu zdrojových IP adres
+                cmd_list_ip
+            ;;
+            list-hosts) # výpis seznamu zdrojových doménových jmen
+                cmd_list_hosts
+            ;;
+            list-uri) # výpis seznamu cílových zdrojů (URI)
+                cmd_list_uri
+            ;;
+            hist-ip) # výpis histogramu četností dotazů podle zdrojových IP adres
+                cmd_hist_ip
+            ;;
+            hist-load) # výpis histogramu zátěže (tj. počtu dotazů ve jednotlivých časových intervalech)
+                cmd_hist_load
+            ;;
+            '') # no command
+                cmd_basic_print
+            ;;
+            *) # unknown command
+                error_exit "$EXIT_CODE_INVALID_COMMAND" "Invalid command: $CMD"
+            ;;
+        esac
+    }
 }
 
 trap : 0 # cancel exit trap -> exit with 0
