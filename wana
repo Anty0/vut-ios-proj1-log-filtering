@@ -30,7 +30,7 @@ abort()
 |___________________________________________|
 
 EOT
-
+    
     printf "%s: %s\\n" "$SCRIPT_NAME" "Execution of script failed..." >&2
     exit 1 # make sure we exit with exit code on abort
 }
@@ -134,10 +134,10 @@ F_URI=""
         fi
     done
     eval "set -- ${OTHERS}"
-
+    
     CMD=""
     FILES=""
-
+    
     { # Check command and files
         add_file() {
             if [ ! -e "$1" ]; then
@@ -145,13 +145,13 @@ F_URI=""
             fi
             FILES="${FILES} $( str_quote "$1" )"
         }
-
+        
         for arg in "$@"; do
             if [ -n "$CMD" ]; then
                 add_file "$arg"
                 continue
             fi
-
+            
             case "$arg" in
                 list-ip|list-hosts|list-uri|hist-ip|hist-load)
                     CMD="$arg"
@@ -168,6 +168,13 @@ F_URI=""
 
 log_list_ip() {
     cut -s -d ' ' -f 1
+}
+
+log_list_ip_hosts() {
+    while read -r line; do
+        try_get_hostname "$line"
+        printf "\\n"
+    done
 }
 
 log_list_time() {
@@ -269,56 +276,61 @@ files_read() {
     fi
 }
 
-files_filter() {
-    {
-        if [ -n "$F_IP" ]; then
-            awk -v ip="$F_IP" -F ' ' '{
-                if ($1 == ip) print
-            }'
-        else
-            cat # Nothing to filter
-        fi
-    } | {
-        if [ -n "$F_URI" ]; then
-            while read -r line; do
-                uri="$( printf "%s" "$line" | log_list_uri )"
-                if [ -z "$uri" ] || [ -z "$( printf "%s" "$uri" | grep -- "$F_URI" )" ]; then
-                    continue
-                fi
-                printf "%s\\n" "$line"
-            done
-        else
-            cat # Nothing to filter
-        fi
-    } | {
-        if [ -n "$F_AFTER" ] || [ -n "$F_BEFORE" ]; then
-            if [ -n "$F_AFTER" ]; then
-                F_NORM_AFTER="$( normalize_input_date_arg "$F_AFTER" )"
-            fi
-            if [ -n "$F_BEFORE" ]; then
-                F_NORM_BEFORE="$( normalize_input_date_arg "$F_BEFORE" )"
-            fi
+filter_ip() {
+    if [ -n "$F_IP" ]; then
+        awk -v ip="$F_IP" -F ' ' '{
+            if ($1 == ip) print
+        }'
+    else
+        cat # Nothing to filter
+    fi
+}
 
-            while read -r line; do
-                dateTime="$( printf "%s" "$line" | log_list_time )"
-                if [ -z "$dateTime" ] || [ "$dateTime" = "-" ]; then
-                    continue
-                fi
-                dateTime="$( printf "%s" "$dateTime" | normalize_log_dates )"
+filter_uri() {
+    if [ -n "$F_URI" ]; then
+        while read -r line; do
+            uri="$( printf "%s" "$line" | log_list_uri )"
+            if [ -z "$uri" ] || [ -z "$( printf "%s" "$uri" | grep -- "$F_URI" )" ]; then
+                continue
+            fi
+            printf "%s\\n" "$line"
+        done
+    else
+        cat # Nothing to filter
+    fi
+}
 
-                
-                if [ -n "$F_AFTER" ] && [ "$( compare_strings "$dateTime" "$F_NORM_AFTER" )" -gt -1 ]; then
-                    continue
-                fi
-                if [ -n "$F_BEFORE" ] && [ "$( compare_strings "$dateTime" "$F_NORM_BEFORE" )" -lt 1 ]; then
-                    continue
-                fi
-                printf "%s\\n" "$line"
-            done
-        else
-            cat # Nothing to filter
+filter_date() {
+    if [ -n "$F_AFTER" ] || [ -n "$F_BEFORE" ]; then
+        if [ -n "$F_AFTER" ]; then
+            F_NORM_AFTER="$( normalize_input_date_arg "$F_AFTER" )"
         fi
-    }
+        if [ -n "$F_BEFORE" ]; then
+            F_NORM_BEFORE="$( normalize_input_date_arg "$F_BEFORE" )"
+        fi
+        
+        while read -r line; do
+            dateTime="$( printf "%s" "$line" | log_list_time )"
+            if [ -z "$dateTime" ] || [ "$dateTime" = "-" ]; then
+                continue
+            fi
+            dateTime="$( printf "%s" "$dateTime" | normalize_log_dates )"
+            
+            if [ -n "$F_AFTER" ] && [ "$( compare_strings "$dateTime" "$F_NORM_AFTER" )" -gt -1 ]; then
+                continue
+            fi
+            if [ -n "$F_BEFORE" ] && [ "$( compare_strings "$dateTime" "$F_NORM_BEFORE" )" -lt 1 ]; then
+                continue
+            fi
+            printf "%s\\n" "$line"
+        done
+    else
+        cat # Nothing to filter
+    fi
+}
+
+filter_all() {
+    filter_ip | filter_uri | filter_date
 }
 
 cmd_list_ip() {
@@ -326,12 +338,7 @@ cmd_list_ip() {
 }
 
 cmd_list_hosts() {
-    cmd_list_ip | {
-        while read -r line; do
-            try_get_hostname "$line"
-            printf "\\n"
-        done
-    } | sort -u
+    log_list_ip | sort -u | log_list_ip_hosts | sort -u
 }
 
 cmd_list_uri() {
@@ -351,7 +358,7 @@ cmd_basic_print() {
 }
 
 { # Process command
-    { eval "files_read ${FILES}"; } | files_filter | {
+    { eval "files_read ${FILES}"; } | filter_all | {
         case "$CMD" in
             list-ip) # výpis seznamu zdrojových IP adres
                 cmd_list_ip
